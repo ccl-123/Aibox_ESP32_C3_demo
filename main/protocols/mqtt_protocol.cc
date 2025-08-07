@@ -243,6 +243,42 @@ bool MqttProtocol::SendText(const std::string& text) {
 
 // 发送音频数据
 bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
+
+
+    #if 1
+
+    if (publish_topic_.empty() || mqtt_ == nullptr || !mqtt_->IsConnected()) {
+        return false;
+    }
+
+    std::string mqtt_payload;
+
+    // 只有当时间戳不为0时才插入时间戳头部（AEC启动时）
+    if (packet.timestamp != 0) {
+        // 格式: timestamp (4字节) | payload (音频数据)
+        uint32_t net_timestamp = htonl(packet.timestamp);
+
+        // 构造带时间戳的数据
+        mqtt_payload.reserve(sizeof(net_timestamp) + packet.payload.size());
+        mqtt_payload.append(reinterpret_cast<const char*>(&net_timestamp), sizeof(net_timestamp));
+        mqtt_payload.append(reinterpret_cast<const char*>(packet.payload.data()), packet.payload.size());
+    } else {
+        // 如果timestamp为0，直接发送纯音频数据
+        mqtt_payload = std::string(reinterpret_cast<const char*>(packet.payload.data()),
+                                  packet.payload.size());
+    }
+
+    if (!mqtt_->Publish(publish_topic_, std::move(mqtt_payload))) {
+        ESP_LOGE(TAG, "Failed to publish audio message");
+        SetError(Lang::Strings::SERVER_ERROR);
+        return false;
+    }
+
+    return true;
+
+    #else
+
+
     if (publish_topic_.empty() || mqtt_ == nullptr || !mqtt_->IsConnected()) {
         return false;
     }
@@ -289,6 +325,8 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
     }
 
     return true;
+
+    #end
 }
 
 // 发送IMU（陀螺仪）数据
