@@ -871,7 +871,7 @@ void Application::OnAudioOutput() {
 
 void Application::OnAudioInput() {
     //ESP_LOGW(TAG, "=====================  OnAudioInput  ======================");
-    ESP_LOGW(TAG, "OnAudioInput: IsDetectionRunning=%d", wake_word_->IsDetectionRunning());
+    
     if (device_state_ == kDeviceStateAudioTesting) {
         if (audio_testing_queue_.size() >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
             ExitAudioTestingMode();

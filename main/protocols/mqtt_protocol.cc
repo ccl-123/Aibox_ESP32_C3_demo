@@ -247,10 +247,6 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
         return false;
     }
 
-    // S3分片发送逻辑
-    const size_t MAX_CHUNK_SIZE = 1024;
-    size_t remaining = packet.payload.size();
-    size_t offset = 0;
     std::string mqtt_payload;
 
     // 只有当时间戳不为0时才插入时间戳头部（AEC启动时）
@@ -264,22 +260,8 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
         mqtt_payload.append(reinterpret_cast<const char*>(packet.payload.data()), packet.payload.size());
     } else {
         // 如果timestamp为0，直接发送纯音频数据
-        // mqtt_payload = std::string(reinterpret_cast<const char*>(packet.payload.data()),
-        //                           packet.payload.size());
-
-        while (remaining > 0) {
-            size_t chunk_size = std::min(remaining, MAX_CHUNK_SIZE);
-            std::string payload(reinterpret_cast<const char*>(packet.payload.data() + offset), chunk_size);
-            bool result = mqtt_->Publish(publish_topic_, payload, 0);  // QoS 0
-
-            if (!result) {
-                ESP_LOGE(TAG, "Failed to publish audio chunk");
-                return false;
-            }
-
-            remaining -= chunk_size;
-            offset += chunk_size;
-        }
+        mqtt_payload = std::string(reinterpret_cast<const char*>(packet.payload.data()),
+                                  packet.payload.size());
     }
 
     if (!mqtt_->Publish(publish_topic_, std::move(mqtt_payload))) {
