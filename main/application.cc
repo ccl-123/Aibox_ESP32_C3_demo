@@ -28,6 +28,7 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -53,6 +54,10 @@ static const char* const STATE_STRINGS[] = {
 Application::Application() {
     event_group_ = xEventGroupCreate();
     background_task_ = new BackgroundTask(4096 * 7);
+
+    ////初始化OTA相关参数
+    ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
+    ota_.SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
 
 #if CONFIG_USE_DEVICE_AEC
     aec_mode_ = kAecOnDeviceSide;
@@ -100,9 +105,9 @@ Application::~Application() {
     vEventGroupDelete(event_group_);
 }
 
-void Application::CheckNewVersion(Ota& ota) {
-    auto& board = Board::GetInstance();
-  ///FFF改屏幕 注释
+void Application::CheckNewVersion() {
+  auto& board = Board::GetInstance();
+
   auto display = board.GetDisplay();
   // Check if there is a new firmware version available
   ota_.SetPostData(board.GetJson());
@@ -110,6 +115,7 @@ void Application::CheckNewVersion(Ota& ota) {
   while (true) {
     if (ota_.CheckVersion()) {
       if (ota_.HasNewVersion()) {
+
         // Wait for the chat state to be idle
         do {
           vTaskDelay(pdMS_TO_TICKS(3000));
@@ -119,51 +125,45 @@ void Application::CheckNewVersion(Ota& ota) {
         Schedule([this, &board, display]() {
           SetDeviceState(kDeviceStateUpgrading);
 
-          ///FFF改屏幕 加display 空指针判断
           // if(display){
               display->SetIcon(FONT_AWESOME_DOWNLOAD);
-              display->SetStatus("新版本 " + ota_.GetFirmwareVersion());
+              display->SetStatus(("新版本 " + ota_.GetFirmwareVersion()).c_str());
           // }
 
           auto codec = board.GetAudioCodec();
           codec->EnableOutput(true);
           // 播放升级音频提示
-          PlayOpusFile(p3_update_start, p3_update_end - p3_update_start);
-          ESP_LOGE(TAG, "Firmware upgrade..."); 
+          PlaySound(Lang::Sounds::P3_UPGRADE);
+          ESP_LOGE(TAG, "Firmware upgrade...");
           vTaskDelay(pdMS_TO_TICKS(2500));
 
           // 预先关闭音频输出和输入，避免升级过程有音频操作
-          
+
           codec->EnableInput(false);  // 关闭麦克风输入
 
           // 清空音频队列
           {
-            audio_decode_queue_->clear();
-            //ESP_LOGW("CLEAR_AUDIO_QUEUE", "mmmmmmmmmmmmmmmmmmmmmmm  01  mmmmmmmmmmmmmmmmmmmm");
+            std::lock_guard<std::mutex> lock(mutex_);
+            audio_decode_queue_.clear();
+
           }
 
           // 停止正在进行的背景任务
           background_task_->WaitForCompletion();
 
           // 停止音频处理器和唤醒词检测
-#if CONFIG_IDF_TARGET_ESP32S3
-          audio_processor_.Stop();
-          wake_word_detect_.StopDetection();
-#endif
+          audio_processor_->Stop();
+          wake_word_->StopDetection();
 
           // 等待任何正在进行的音频操作完成
           vTaskDelay(pdMS_TO_TICKS(1000));
 
           // 开始升级
           ota_.StartUpgrade([this,display](int progress, size_t speed) {
+
             char buffer[64];
             snprintf(buffer, sizeof(buffer), "%d%% %zuKB/s", progress,
                      speed / 1024);
-            if (oudio_output_finish_) {
-              PlayOpusFile(p3_update_start, p3_update_end - p3_update_start);
-              oudio_output_finish_ = false;
-              ESP_LOGI("[output]", "**************** output01 value: %d*****************",oudio_output_finish_); 
-            }
             // display->SetStatus(buffer);
           });
           // 如果升级成功，设备会重启，不会执行到这里
@@ -430,8 +430,13 @@ void Application::Start() {
     display->UpdateStatusBar(true);
 
     // Check for new firmware version or get the MQTT broker address
-    Ota ota;
-    CheckNewVersion(ota);
+    xTaskCreate(
+        [](void* arg) {
+          Application* app = (Application*)arg;
+          app->CheckNewVersion();
+          vTaskDelete(NULL);
+        },
+        "check_new_version", 6800, this, 1, nullptr);
 
     // Initialize the protocol
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
@@ -441,9 +446,9 @@ void Application::Start() {
     McpServer::GetInstance().AddCommonTools();
 #endif
 
-    if (ota.HasMqttConfig()) {
+    if (ota_.HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota.HasWebsocketConfig()) {
+    } else if (ota_.HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
@@ -695,9 +700,9 @@ void Application::Start() {
     xEventGroupWaitBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT, pdTRUE, pdFALSE, portMAX_DELAY);
     SetDeviceState(kDeviceStateIdle);
 
-    has_server_time_ = ota.HasServerTime();
+    has_server_time_ = ota_.HasServerTime();
     if (protocol_started) {
-        std::string message = std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
+        std::string message = std::string(Lang::Strings::VERSION) + ota_.GetCurrentVersion();
         display->ShowNotification(message.c_str());
         display->SetChatMessage("system", "");
         // Play the success sound to indicate the device is ready

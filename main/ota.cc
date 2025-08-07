@@ -51,13 +51,16 @@ bool Ota::CheckVersion() {
 
     http->SetHeader("Content-Type", "application/json");
     std::string method = post_data_.length() > 0 ? "POST" : "GET";
-    if (!http->Open(method, check_version_url_, post_data_)) {
+    if (post_data_.length() > 0) {
+        http->SetContent(std::string(post_data_));
+    }
+    if (!http->Open(method, check_version_url_)) {
         ESP_LOGE(TAG, "Failed to open HTTP connection");
         delete http;
         return false;
     }
 
-    auto response = http->GetBody();
+    auto response = http->ReadAll();
     http->Close();
     delete http;
 
@@ -83,6 +86,25 @@ bool Ota::CheckVersion() {
             }
         }
         has_mqtt_config_ = true;
+    }
+
+    cJSON *websocket = cJSON_GetObjectItem(root, "websocket");
+    if (websocket != NULL) {
+        Settings settings("websocket", true);
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, websocket) {
+            if (item->type == cJSON_String) {
+                if (settings.GetString(item->string) != item->valuestring) {
+                    settings.SetString(item->string, item->valuestring);
+                }
+            }
+        }
+        has_websocket_config_ = true;
+    }
+
+    cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
+    if (server_time != NULL) {
+        has_server_time_ = true;
     }
 
     cJSON *firmware = cJSON_GetObjectItem(root, "firmware");

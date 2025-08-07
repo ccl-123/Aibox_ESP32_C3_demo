@@ -16,6 +16,8 @@ public:
     bool CheckVersion();
     bool HasNewVersion() { return has_new_version_; }
     bool HasMqttConfig() { return has_mqtt_config_; }
+    bool HasWebsocketConfig() { return has_websocket_config_; }
+    bool HasServerTime() { return has_server_time_; }
     void StartUpgrade(std::function<void(int progress, size_t speed)> callback);
     void MarkCurrentVersionValid();
 
@@ -26,6 +28,8 @@ private:
     std::string check_version_url_;
     bool has_new_version_ = false;
     bool has_mqtt_config_ = false;
+    bool has_websocket_config_ = false;
+    bool has_server_time_ = false;
     std::string current_version_;
     std::string firmware_version_;
     std::string firmware_url_;
