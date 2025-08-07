@@ -669,7 +669,7 @@ void Application::Start() {
 
     wake_word_->Initialize(codec);
     wake_word_->OnWakeWordDetected([this](const std::string& wake_word) {
-        ESP_LOGW(TAG, "=====================WAKE WORD======================");
+        //ESP_LOGW(TAG, "=====================WAKE WORD======================");
         Schedule([this, &wake_word]() {
             if (!protocol_) {
                 return;
@@ -803,7 +803,7 @@ void Application::MainEventLoop() {
 
 // The Audio Loop is used to input and output audio data
 void Application::AudioLoop() {
-    ESP_LOGW(TAG, "=====================  AudioLoop  ======================");
+    //ESP_LOGW(TAG, "=====================  AudioLoop  ======================");
     auto codec = Board::GetInstance().GetAudioCodec();
     while (true) {
         OnAudioInput();
@@ -870,7 +870,7 @@ void Application::OnAudioOutput() {
 }
 
 void Application::OnAudioInput() {
-    ESP_LOGW(TAG, "=====================  OnAudioInput  ======================");
+    //ESP_LOGW(TAG, "=====================  OnAudioInput  ======================");
     ESP_LOGW(TAG, "OnAudioInput: IsDetectionRunning=%d", wake_word_->IsDetectionRunning());
     if (device_state_ == kDeviceStateAudioTesting) {
         if (audio_testing_queue_.size() >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
@@ -899,10 +899,10 @@ void Application::OnAudioInput() {
         int samples = wake_word_->GetFeedSize();
         if (samples > 0) {
             if (ReadAudio(data, 16000, samples)) {
-                ESP_LOGW(TAG, "==------ ReadAudio  ------==");
-                ESP_LOGW(TAG, "Feed wake word with audio, size=%d", data.size());
+                //ESP_LOGW(TAG, "==------ ReadAudio  ------==");
+                //ESP_LOGW(TAG, "Feed wake word with audio, size=%d", data.size());
                 wake_word_->Feed(data);
-                ESP_LOGW(TAG, "Feed wake word with audio, size=%d", data.size());
+                //ESP_LOGW(TAG, "Feed wake word with audio, size=%d", data.size());
                 return;
             }
         }
