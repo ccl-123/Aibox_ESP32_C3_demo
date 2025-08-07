@@ -243,6 +243,8 @@ bool MqttProtocol::SendText(const std::string& text) {
 
 // 发送音频数据
 bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
+
+
     if (publish_topic_.empty() || mqtt_ == nullptr || !mqtt_->IsConnected()) {
         return false;
     }

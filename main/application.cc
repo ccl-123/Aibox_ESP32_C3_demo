@@ -101,111 +101,90 @@ Application::~Application() {
 }
 
 void Application::CheckNewVersion(Ota& ota) {
-    const int MAX_RETRY = 10;
-    int retry_count = 0;
-    int retry_delay = 10; // 初始重试延迟为10秒
+    auto& board = Board::GetInstance();
+  ///FFF改屏幕 注释
+  auto display = board.GetDisplay();
+  // Check if there is a new firmware version available
+  ota_.SetPostData(board.GetJson());
+//   return ;
+  while (true) {
+    if (ota_.CheckVersion()) {
+      if (ota_.HasNewVersion()) {
+        // Wait for the chat state to be idle
+        do {
+          vTaskDelay(pdMS_TO_TICKS(3000));
+        } while (GetDeviceState() != kDeviceStateIdle);
 
-    while (true) {
-        SetDeviceState(kDeviceStateActivating);
-        auto display = Board::GetInstance().GetDisplay();
-        display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
+        // Use main task to do the upgrade, not cancelable
+        Schedule([this, &board, display]() {
+          SetDeviceState(kDeviceStateUpgrading);
 
-        if (!ota.CheckVersion()) {
-            retry_count++;
-            if (retry_count >= MAX_RETRY) {
-                ESP_LOGE(TAG, "Too many retries, exit version check");
-                return;
+          ///FFF改屏幕 加display 空指针判断
+          // if(display){
+              display->SetIcon(FONT_AWESOME_DOWNLOAD);
+              display->SetStatus("新版本 " + ota_.GetFirmwareVersion());
+          // }
+
+          auto codec = board.GetAudioCodec();
+          codec->EnableOutput(true);
+          // 播放升级音频提示
+          PlayOpusFile(p3_update_start, p3_update_end - p3_update_start);
+          ESP_LOGE(TAG, "Firmware upgrade..."); 
+          vTaskDelay(pdMS_TO_TICKS(2500));
+
+          // 预先关闭音频输出和输入，避免升级过程有音频操作
+          
+          codec->EnableInput(false);  // 关闭麦克风输入
+
+          // 清空音频队列
+          {
+            audio_decode_queue_->clear();
+            //ESP_LOGW("CLEAR_AUDIO_QUEUE", "mmmmmmmmmmmmmmmmmmmmmmm  01  mmmmmmmmmmmmmmmmmmmm");
+          }
+
+          // 停止正在进行的背景任务
+          background_task_->WaitForCompletion();
+
+          // 停止音频处理器和唤醒词检测
+#if CONFIG_IDF_TARGET_ESP32S3
+          audio_processor_.Stop();
+          wake_word_detect_.StopDetection();
+#endif
+
+          // 等待任何正在进行的音频操作完成
+          vTaskDelay(pdMS_TO_TICKS(1000));
+
+          // 开始升级
+          ota_.StartUpgrade([this,display](int progress, size_t speed) {
+            char buffer[64];
+            snprintf(buffer, sizeof(buffer), "%d%% %zuKB/s", progress,
+                     speed / 1024);
+            if (oudio_output_finish_) {
+              PlayOpusFile(p3_update_start, p3_update_end - p3_update_start);
+              oudio_output_finish_ = false;
+              ESP_LOGI("[output]", "**************** output01 value: %d*****************",oudio_output_finish_); 
             }
+            // display->SetStatus(buffer);
+          });
+          // 如果升级成功，设备会重启，不会执行到这里
+          // 如果执行到这里，说明升级失败
+          ESP_LOGE(TAG, "Firmware upgrade failed...");
+          display->SetStatus("升级失败");
+          vTaskDelay(pdMS_TO_TICKS(3000));
 
-            char buffer[128];
-            snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, retry_delay, ota.GetCheckVersionUrl().c_str());
-            Alert(Lang::Strings::ERROR, buffer, "sad", Lang::Sounds::P3_EXCLAMATION);
-
-            ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)", retry_delay, retry_count, MAX_RETRY);
-            for (int i = 0; i < retry_delay; i++) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                if (device_state_ == kDeviceStateIdle) {
-                    break;
-                }
-            }
-            retry_delay *= 2; // 每次重试后延迟时间翻倍
-            continue;
-        }
-        retry_count = 0;
-        retry_delay = 10; // 重置重试延迟时间
-
-        if (ota.HasNewVersion()) {
-            Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "happy", Lang::Sounds::P3_UPGRADE);
-
-            vTaskDelay(pdMS_TO_TICKS(3000));
-
-            SetDeviceState(kDeviceStateUpgrading);
-            
-            display->SetIcon(FONT_AWESOME_DOWNLOAD);
-            std::string message = std::string(Lang::Strings::NEW_VERSION) + ota.GetFirmwareVersion();
-            display->SetChatMessage("system", message.c_str());
-
-            auto& board = Board::GetInstance();
-            board.SetPowerSaveMode(false);
-            wake_word_->StopDetection();
-            // 预先关闭音频输出，避免升级过程有音频操作
-            auto codec = board.GetAudioCodec();
-            codec->EnableInput(false);
-            codec->EnableOutput(false);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                audio_decode_queue_.clear();
-            }
-            background_task_->WaitForCompletion();
-            delete background_task_;
-            background_task_ = nullptr;
-            vTaskDelay(pdMS_TO_TICKS(1000));
-
-            ota.StartUpgrade([display](int progress, size_t speed) {
-                char buffer[64];
-                snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
-                display->SetChatMessage("system", buffer);
-            });
-
-            // If upgrade success, the device will reboot and never reach here
-            display->SetStatus(Lang::Strings::UPGRADE_FAILED);
-            ESP_LOGI(TAG, "Firmware upgrade failed...");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            Reboot();
-            return;
-        }
-
-        // No new version, mark the current version as valid
-        ota.MarkCurrentVersionValid();
-        if (!ota.HasActivationCode() && !ota.HasActivationChallenge()) {
-            xEventGroupSetBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT);
-            // Exit the loop if done checking new version
-            break;
-        }
-
-        display->SetStatus(Lang::Strings::ACTIVATION);
-        // Activation code is shown to the user and waiting for the user to input
-        if (ota.HasActivationCode()) {
-            ShowActivationCode(ota.GetActivationCode(), ota.GetActivationMessage());
-        }
-
-        // This will block the loop until the activation is done or timeout
-        for (int i = 0; i < 10; ++i) {
-            ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
-            esp_err_t err = ota.Activate();
-            if (err == ESP_OK) {
-                xEventGroupSetBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT);
-                break;
-            } else if (err == ESP_ERR_TIMEOUT) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(10000));
-            }
-            if (device_state_ == kDeviceStateIdle) {
-                break;
-            }
-        }
+          // 重启设备
+          esp_restart();
+        });
+      } else {
+        ota_.MarkCurrentVersionValid();
+        // display->ShowNotification("版本 " + ota_.GetCurrentVersion());
+      }
+      return;
     }
+
+    // Check again in 60 seconds
+    vTaskDelay(pdMS_TO_TICKS(60000));
+  }
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
