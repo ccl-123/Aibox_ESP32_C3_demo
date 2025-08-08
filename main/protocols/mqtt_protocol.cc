@@ -241,38 +241,88 @@ bool MqttProtocol::SendText(const std::string& text) {
     return true;
 }
 
-// 发送音频数据
+// 发送音频数据 - 支持分片传输
 bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
-
+    ESP_LOGI(TAG, "SendAudio called: payload_size=%zu, sample_rate=%d, frame_duration=%d",
+             packet.payload.size(), packet.sample_rate, packet.frame_duration);
 
     if (publish_topic_.empty() || mqtt_ == nullptr || !mqtt_->IsConnected()) {
+        ESP_LOGE(TAG, "MQTT client not connected or topic empty");
+        audio_stats_.failed_packets++;
         return false;
     }
 
-    std::string mqtt_payload;
+    // 更新统计信息
+    audio_stats_.total_packets++;
+    audio_stats_.total_bytes += packet.payload.size();
+    audio_stats_.last_transmission = std::chrono::steady_clock::now();
 
-    // 只有当时间戳不为0时才插入时间戳头部（AEC启动时）
-    if (packet.timestamp != 0) {
-        // 格式: timestamp (4字节) | payload (音频数据)
-        uint32_t net_timestamp = htonl(packet.timestamp);
+    // 直接使用payload数据，不处理时间戳（参考S3项目）
+    std::string mqtt_payload(reinterpret_cast<const char*>(packet.payload.data()),
+                            packet.payload.size());
 
-        // 构造带时间戳的数据
-        mqtt_payload.reserve(sizeof(net_timestamp) + packet.payload.size());
-        mqtt_payload.append(reinterpret_cast<const char*>(&net_timestamp), sizeof(net_timestamp));
-        mqtt_payload.append(reinterpret_cast<const char*>(packet.payload.data()), packet.payload.size());
+    // 分片发送大的音频数据（参考S3项目实现）
+    const size_t MAX_CHUNK_SIZE = 1024;  // 每片最大1KB
+
+    if (mqtt_payload.size() <= MAX_CHUNK_SIZE) {
+        // 小数据包直接发送
+        if (!mqtt_->Publish(publish_topic_, std::move(mqtt_payload))) {
+            ESP_LOGE(TAG, "Failed to publish audio message");
+            audio_stats_.failed_packets++;
+            SetError(Lang::Strings::SERVER_ERROR);
+            return false;
+        }
+        audio_stats_.total_chunks++;
     } else {
-        // 如果timestamp为0，直接发送纯音频数据
-        mqtt_payload = std::string(reinterpret_cast<const char*>(packet.payload.data()),
-                                  packet.payload.size());
-    }
+        // 大数据包分片发送
+        size_t remaining = mqtt_payload.size();
+        size_t offset = 0;
+        size_t total_chunks = (mqtt_payload.size() + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE;
 
-    if (!mqtt_->Publish(publish_topic_, std::move(mqtt_payload))) {
-        ESP_LOGE(TAG, "Failed to publish audio message");
-        SetError(Lang::Strings::SERVER_ERROR);
-        return false;
+        ESP_LOGI(TAG, "Sending large audio packet in chunks: total_size=%zu, chunks=%zu",
+                 mqtt_payload.size(), total_chunks);
+
+        while (remaining > 0) {
+            size_t chunk_size = std::min(remaining, MAX_CHUNK_SIZE);
+            std::string chunk_payload(mqtt_payload.data() + offset, chunk_size);
+
+            if (!mqtt_->Publish(publish_topic_, chunk_payload, 0)) {  // QoS 0，低延迟
+                ESP_LOGE(TAG, "Failed to publish audio chunk at offset %zu", offset);
+                audio_stats_.failed_packets++;
+                SetError(Lang::Strings::SERVER_ERROR);
+                return false;
+            }
+
+            audio_stats_.total_chunks++;
+            remaining -= chunk_size;
+            offset += chunk_size;
+        }
+
+        ESP_LOGI(TAG, "Successfully sent audio packet in %zu chunks", total_chunks);
     }
 
     return true;
+}
+
+// 打印音频传输统计信息（用于调试）
+void MqttProtocol::LogAudioStats() {
+    auto now = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+        now - audio_stats_.last_transmission).count();
+
+    ESP_LOGI(TAG, "=== Audio Transmission Stats ===");
+    ESP_LOGI(TAG, "Total packets: %u", (unsigned int)audio_stats_.total_packets);
+    ESP_LOGI(TAG, "Total chunks: %u", (unsigned int)audio_stats_.total_chunks);
+    ESP_LOGI(TAG, "Failed packets: %u", (unsigned int)audio_stats_.failed_packets);
+    ESP_LOGI(TAG, "Total bytes: %llu", (unsigned long long)audio_stats_.total_bytes);
+    ESP_LOGI(TAG, "Success rate: %.2f%%",
+             audio_stats_.total_packets > 0 ?
+             (100.0 * (audio_stats_.total_packets - audio_stats_.failed_packets) / audio_stats_.total_packets) : 0.0);
+    ESP_LOGI(TAG, "Avg chunks per packet: %.2f",
+             audio_stats_.total_packets > 0 ?
+             (float)audio_stats_.total_chunks / audio_stats_.total_packets : 0.0);
+    ESP_LOGI(TAG, "Last transmission: %lld seconds ago", (long long)duration);
+    ESP_LOGI(TAG, "================================");
 }
 
 // 发送IMU（陀螺仪）数据
