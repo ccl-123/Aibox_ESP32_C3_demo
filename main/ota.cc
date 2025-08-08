@@ -174,11 +174,13 @@ void Ota::Upgrade(const std::string& firmware_url) {
     std::string image_header;
 
     auto http = Board::GetInstance().CreateHttp();
+    ESP_LOGI(TAG, "Opening HTTP connection to: %s", firmware_url.c_str());
     if (!http->Open("GET", firmware_url)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
+        ESP_LOGE(TAG, "Failed to open HTTP connection to: %s", firmware_url.c_str());
         delete http;
         return;
     }
+    ESP_LOGI(TAG, "HTTP connection opened successfully");
 
     size_t content_length = http->GetBodyLength();
     if (content_length == 0) {
@@ -229,23 +231,37 @@ void Ota::Upgrade(const std::string& firmware_url) {
                     return;
                 }
 
-                if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
-                    esp_ota_abort(update_handle);
+                esp_err_t ota_begin_err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
+                if (ota_begin_err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to begin OTA: %s", esp_err_to_name(ota_begin_err));
                     delete http;
-                    ESP_LOGE(TAG, "Failed to begin OTA");
                     return;
                 }
+                ESP_LOGI(TAG, "OTA begin successful, handle: %p", (void*)update_handle);
 
                 image_header_checked = true;
+
+                // 写入已收集的头部数据
+                auto err = esp_ota_write(update_handle, image_header.data(), image_header.size());
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to write OTA header data: %s", esp_err_to_name(err));
+                    esp_ota_abort(update_handle);
+                    delete http;
+                    return;
+                }
+                ESP_LOGI(TAG, "Written %zu bytes of header data", image_header.size());
+
                 std::string().swap(image_header);
             }
-        }
-        auto err = esp_ota_write(update_handle, buffer, ret);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write OTA data: %s", esp_err_to_name(err));
-            esp_ota_abort(update_handle);
-            delete http;
-            return;
+        } else {
+            // 只有在OTA已经开始后才写入数据
+            auto err = esp_ota_write(update_handle, buffer, ret);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to write OTA data: %s", esp_err_to_name(err));
+                esp_ota_abort(update_handle);
+                delete http;
+                return;
+            }
         }
     }
     delete http;
@@ -272,6 +288,7 @@ void Ota::Upgrade(const std::string& firmware_url) {
 }
 
 void Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback) {
+    ESP_LOGI(TAG, "StartUpgrade called with URL: %s", firmware_url_.c_str());
     upgrade_callback_ = callback;
     Upgrade(firmware_url_);
 }

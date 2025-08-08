@@ -117,13 +117,19 @@ void Application::CheckNewVersion() {
       if (ota_.HasNewVersion()) {
         ESP_LOGI(TAG, "New firmware version detected: %s", ota_.GetFirmwareVersion().c_str());
 
+        // 设置检查完成事件，让主线程继续执行并设置设备状态为空闲
+        xEventGroupSetBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT);
+
         // 等待设备进入空闲状态，确保升级安全
+        ESP_LOGI(TAG, "Waiting for device to enter idle state before upgrade...");
         do {
-          vTaskDelay(pdMS_TO_TICKS(3000));
+          vTaskDelay(pdMS_TO_TICKS(1000)); // 减少等待时间，提高响应性
         } while (GetDeviceState() != kDeviceStateIdle);
 
+        ESP_LOGI(TAG, "Device is now idle, scheduling upgrade...");
         // 使用主任务执行升级，不可取消
         Schedule([this, &board, display]() {
+          ESP_LOGI(TAG, "Executing upgrade task in main thread...");
           SetDeviceState(kDeviceStateUpgrading);
 
           // 显示升级状态
@@ -217,6 +223,7 @@ void Application::CheckNewVersion() {
           ESP_LOGI(TAG, "Restarting device after upgrade failure...");
           esp_restart();
         });
+        return; // 升级任务已调度，退出版本检查循环
       } else {
         // 没有新版本，标记当前版本为有效
         ota_.MarkCurrentVersionValid();
@@ -1026,11 +1033,11 @@ void Application::SetDeviceState(DeviceState state) {
     if (device_state_ == state) {
         return;
     }
-    
+
     clock_ticks_ = 0;
     auto previous_state = device_state_;
     device_state_ = state;
-    ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
+    ESP_LOGI(TAG, "STATE CHANGE: %s -> %s", STATE_STRINGS[previous_state], STATE_STRINGS[device_state_]);
     // The state is changed, wait for all background tasks to finish
     background_task_->WaitForCompletion();
 
