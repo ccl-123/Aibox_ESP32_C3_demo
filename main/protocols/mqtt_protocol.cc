@@ -42,7 +42,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 
     // 从NVS读取MQTT配置
     Settings settings("mqtt", true);
-    
+
     endpoint_ = settings.GetString("endpoint");
     client_id_ = settings.GetString("client_id");
     username_ = settings.GetString("username");
@@ -53,11 +53,11 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     // 使用设备MAC地址生成唯一的设备ID和相关主题
     std::string user_id3 = SystemInfo::GetMacAddressDecimal();
     user_id3_ = user_id3;
-    
+
     std::string phone_control_topic = "doll/control/" + user_id3;
     std::string languagesType_topic = "doll/set/" + user_id3;
     std::string moan_topic = "doll/control_moan/" + user_id3;
-    
+
     // 从NVS加载保存的语言设置
     std::string saved_language = LoadLanguageTypeFromNVS();
     if (!saved_language.empty()) {
@@ -118,7 +118,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
                     on_incoming_audio_(std::move(packet));
                 }
             }
-        } 
+        }
         else if (topic == phone_control_topic) {
             // 处理手机控制消息
             ESP_LOGI(TAG, "Received control message: %s", payload.c_str());
@@ -168,12 +168,12 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     // 订阅相关主题
     if (!subscribe_topic_.empty()) {
         mqtt_->Subscribe(subscribe_topic_, 2);
-        ESP_LOGI(TAG, "Subscribing to topic: %s", subscribe_topic_.c_str());       
-        mqtt_->Subscribe(phone_control_topic, 0); 
+        ESP_LOGI(TAG, "Subscribing to topic: %s", subscribe_topic_.c_str());
+        mqtt_->Subscribe(phone_control_topic, 0);
         ESP_LOGI(TAG, "phone_control_topic: %s", phone_control_topic.c_str());
-        mqtt_->Subscribe(languagesType_topic, 0); 
+        mqtt_->Subscribe(languagesType_topic, 0);
         ESP_LOGI(TAG, "languagesType_topic: %s", languagesType_topic.c_str());
-        mqtt_->Subscribe(moan_topic, 0); 
+        mqtt_->Subscribe(moan_topic, 0);
         ESP_LOGI(TAG, "moan_topic: %s", moan_topic.c_str());
     }
 
@@ -192,18 +192,18 @@ void MqttProtocol::UpdateLanguage(const std::string& language) {
 void MqttProtocol::WakeupCall() {
     std::string user_id = SystemInfo::GetMacAddressDecimal();
     std::string wakeup_topic = "stt/audio/text";
-    
+
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "device_id", user_id.c_str());
-    cJSON_AddStringToObject(root, "device_type", "doll"); 
+    cJSON_AddStringToObject(root, "device_type", "doll");
     cJSON_AddStringToObject(root, "stt_text", "Device is ready#");
     cJSON_AddStringToObject(root, "modal_type", "audio");
     char* json_string = cJSON_PrintUnformatted(root);
     mqtt_->Publish(wakeup_topic, json_string);
-    
+
     free(json_string);
     cJSON_Delete(root);
-    
+
     ESP_LOGI(TAG, "Published wakeup call to %s", wakeup_topic.c_str());
 }
 
@@ -243,8 +243,9 @@ bool MqttProtocol::SendText(const std::string& text) {
 
 // 发送音频数据 - 支持分片传输
 bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
-    ESP_LOGI(TAG, "SendAudio called: payload_size=%zu, sample_rate=%d, frame_duration=%d",
-             packet.payload.size(), packet.sample_rate, packet.frame_duration);
+    // 降低日志频率，并修正格式化规约：使用 %u 搭配显式转换，避免某些平台下 %zu 导致变参错位
+    ESP_LOGD(TAG, "SendAudio: payload_size=%u, sample_rate=%d, frame_duration=%d",
+             (unsigned)packet.payload.size(), packet.sample_rate, packet.frame_duration);
 
     if (publish_topic_.empty() || mqtt_ == nullptr || !mqtt_->IsConnected()) {
         ESP_LOGE(TAG, "MQTT client not connected or topic empty");
@@ -273,21 +274,25 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
             return false;
         }
         audio_stats_.total_chunks++;
+        // 成功发送小包（单帧），在 DEBUG 级别记录一次成功日志
+        ESP_LOGD(TAG, "Audio packet published: bytes=%u", (unsigned)mqtt_payload.size());
+
     } else {
         // 大数据包分片发送
         size_t remaining = mqtt_payload.size();
         size_t offset = 0;
         size_t total_chunks = (mqtt_payload.size() + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE;
 
-        ESP_LOGI(TAG, "Sending large audio packet in chunks: total_size=%zu, chunks=%zu",
-                 mqtt_payload.size(), total_chunks);
+        // 修正 size_t 打印格式以避免潜在不兼容
+        ESP_LOGI(TAG, "Sending large audio packet in chunks: total_size=%u, chunks=%u",
+                 (unsigned)mqtt_payload.size(), (unsigned)total_chunks);
 
         while (remaining > 0) {
             size_t chunk_size = std::min(remaining, MAX_CHUNK_SIZE);
             std::string chunk_payload(mqtt_payload.data() + offset, chunk_size);
 
             if (!mqtt_->Publish(publish_topic_, chunk_payload, 0)) {  // QoS 0，低延迟
-                ESP_LOGE(TAG, "Failed to publish audio chunk at offset %zu", offset);
+                ESP_LOGE(TAG, "Failed to publish audio chunk at offset %u", (unsigned)offset);
                 audio_stats_.failed_packets++;
                 SetError(Lang::Strings::SERVER_ERROR);
                 return false;
@@ -298,7 +303,12 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
             offset += chunk_size;
         }
 
-        ESP_LOGI(TAG, "Successfully sent audio packet in %zu chunks", total_chunks);
+        ESP_LOGI(TAG, "Successfully sent audio packet in %u chunks", (unsigned)total_chunks);
+    }
+
+    // 周期性输出统计信息，避免日志过于频繁（每50包一次，约每3秒）
+    if ((audio_stats_.total_packets % 50) == 0) {
+        LogAudioStats();
     }
 
     return true;
@@ -311,17 +321,17 @@ void MqttProtocol::LogAudioStats() {
         now - audio_stats_.last_transmission).count();
 
     ESP_LOGI(TAG, "=== Audio Transmission Stats ===");
-    ESP_LOGI(TAG, "Total packets: %u", (unsigned int)audio_stats_.total_packets);
-    ESP_LOGI(TAG, "Total chunks: %u", (unsigned int)audio_stats_.total_chunks);
-    ESP_LOGI(TAG, "Failed packets: %u", (unsigned int)audio_stats_.failed_packets);
-    ESP_LOGI(TAG, "Total bytes: %llu", (unsigned long long)audio_stats_.total_bytes);
+    ESP_LOGI(TAG, "Total packets: %u", (unsigned)audio_stats_.total_packets);
+    ESP_LOGI(TAG, "Total chunks: %u", (unsigned)audio_stats_.total_chunks);
+    ESP_LOGI(TAG, "Failed packets: %u", (unsigned)audio_stats_.failed_packets);
+    ESP_LOGI(TAG, "Total bytes: %u", (unsigned)audio_stats_.total_bytes);
     ESP_LOGI(TAG, "Success rate: %.2f%%",
              audio_stats_.total_packets > 0 ?
              (100.0 * (audio_stats_.total_packets - audio_stats_.failed_packets) / audio_stats_.total_packets) : 0.0);
     ESP_LOGI(TAG, "Avg chunks per packet: %.2f",
              audio_stats_.total_packets > 0 ?
              (float)audio_stats_.total_chunks / audio_stats_.total_packets : 0.0);
-    ESP_LOGI(TAG, "Last transmission: %lld seconds ago", (long long)duration);
+    ESP_LOGI(TAG, "Last transmission: %d seconds ago", (int)duration);
     ESP_LOGI(TAG, "================================");
 }
 
