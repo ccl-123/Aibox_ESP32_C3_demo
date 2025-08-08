@@ -14,6 +14,7 @@
 #include <string>
 #include <map>
 #include <mutex>
+#include <chrono>
 #include "esp32_s3_szp.h"
 
 #define MQTT_PING_INTERVAL_SECONDS 90
@@ -59,6 +60,28 @@ public:
     void UpdateLanguage(const std::string& language);
     void WakeupCall();
 
+    // 音频传输统计结构体
+    struct AudioTransmissionStats {
+        uint32_t total_packets = 0;
+        uint32_t total_chunks = 0;
+        uint32_t failed_packets = 0;
+        uint64_t total_bytes = 0;
+        std::chrono::steady_clock::time_point last_transmission;
+    };
+
+    // 获取音频传输统计信息
+    AudioTransmissionStats GetAudioStats() const {
+        return audio_stats_;
+    }
+
+    // 重置音频传输统计
+    void ResetAudioStats() {
+        audio_stats_ = AudioTransmissionStats{};
+    }
+
+    // 打印音频传输统计信息（调试用）
+    void LogAudioStats();
+
 
 private:
     EventGroupHandle_t event_group_handle_;
@@ -94,6 +117,8 @@ private:
     // 关机控制
     bool shutdown_requested_ = false;//F移植 添加
 
+    // 音频传输统计实例
+    AudioTransmissionStats audio_stats_;
 
     bool StartMqttClient(bool report_error=false);
     void ParseServerHello(const cJSON* root);
