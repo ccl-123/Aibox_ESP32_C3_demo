@@ -107,45 +107,46 @@ Application::~Application() {
 
 void Application::CheckNewVersion() {
   auto& board = Board::GetInstance();
-
   auto display = board.GetDisplay();
-  // Check if there is a new firmware version available
+
+  // 设置设备信息作为POST数据
   ota_.SetPostData(board.GetJson());
-//   return ;
+
   while (true) {
     if (ota_.CheckVersion()) {
       if (ota_.HasNewVersion()) {
+        ESP_LOGI(TAG, "New firmware version detected: %s", ota_.GetFirmwareVersion().c_str());
 
-        // Wait for the chat state to be idle
+        // 等待设备进入空闲状态，确保升级安全
         do {
           vTaskDelay(pdMS_TO_TICKS(3000));
         } while (GetDeviceState() != kDeviceStateIdle);
 
-        // Use main task to do the upgrade, not cancelable
+        // 使用主任务执行升级，不可取消
         Schedule([this, &board, display]() {
           SetDeviceState(kDeviceStateUpgrading);
 
-          // if(display){
-              display->SetIcon(FONT_AWESOME_DOWNLOAD);
-              display->SetStatus(("新版本 " + ota_.GetFirmwareVersion()).c_str());
-          // }
+          // 显示升级状态
+          display->SetIcon(FONT_AWESOME_DOWNLOAD);
+          display->SetStatus(("新版本 " + ota_.GetFirmwareVersion()).c_str());
 
           auto codec = board.GetAudioCodec();
           codec->EnableOutput(true);
+
           // 播放升级音频提示
           PlaySound(Lang::Sounds::P3_UPGRADE);
-          ESP_LOGE(TAG, "Firmware upgrade...");
+          ESP_LOGI(TAG, "Starting firmware upgrade...");
           vTaskDelay(pdMS_TO_TICKS(2500));
 
-          // 预先关闭音频输出和输入，避免升级过程有音频操作
-
+          // 预先关闭音频输入输出，避免升级过程中的音频操作干扰
           codec->EnableInput(false);  // 关闭麦克风输入
 
-          // 清空音频队列
+          // 清空音频队列并通知等待的线程
           {
             std::lock_guard<std::mutex> lock(mutex_);
             audio_decode_queue_.clear();
-
+            audio_send_queue_.clear();
+            audio_decode_cv_.notify_all();
           }
 
           // 停止正在进行的背景任务
@@ -155,35 +156,92 @@ void Application::CheckNewVersion() {
           audio_processor_->Stop();
           wake_word_->StopDetection();
 
+          // 关闭协议连接，释放网络资源
+          if (protocol_ && protocol_->IsAudioChannelOpened()) {
+            protocol_->CloseAudioChannel();
+          }
+
           // 等待任何正在进行的音频操作完成
           vTaskDelay(pdMS_TO_TICKS(1000));
 
-          // 开始升级
-          ota_.StartUpgrade([this,display](int progress, size_t speed) {
+          // 最后关闭音频输出，确保升级提示音播放完成
+          codec->EnableOutput(false);
 
+          // 开始升级，带进度回调
+          ota_.StartUpgrade([this, display](int progress, size_t speed) {
             char buffer[64];
-            snprintf(buffer, sizeof(buffer), "%d%% %zuKB/s", progress,
-                     speed / 1024);
-            // display->SetStatus(buffer);
+            snprintf(buffer, sizeof(buffer), "%d%% %zuKB/s", progress, speed / 1024);
+            ESP_LOGI(TAG, "Upgrade progress: %s", buffer);
+
+            // 更新显示状态，避免频繁更新
+            static int last_displayed_progress = -1;
+            if (progress != last_displayed_progress && (progress % 5 == 0 || progress >= 95)) {
+              display->SetStatus(buffer);
+              last_displayed_progress = progress;
+            }
+
+            // 在关键进度点提供额外日志
+            if (progress == 50) {
+              ESP_LOGI(TAG, "Upgrade halfway complete...");
+            } else if (progress >= 90) {
+              ESP_LOGI(TAG, "Upgrade nearly complete, preparing to reboot...");
+            }
           });
+
           // 如果升级成功，设备会重启，不会执行到这里
           // 如果执行到这里，说明升级失败
-          ESP_LOGE(TAG, "Firmware upgrade failed...");
-          display->SetStatus("升级失败");
-          vTaskDelay(pdMS_TO_TICKS(3000));
+          ESP_LOGE(TAG, "Firmware upgrade failed!");
 
-          // 重启设备
+          // 显示升级失败状态
+          display->SetStatus("升级失败");
+          display->SetEmotion("sad");
+
+          // 尝试恢复音频系统
+          try {
+            codec->EnableOutput(true);
+            codec->EnableInput(true);
+
+            // 重新启动音频处理器和唤醒词检测
+            audio_processor_->Start();
+            wake_word_->StartDetection();
+
+            ESP_LOGI(TAG, "Audio system recovery attempted");
+          } catch (...) {
+            ESP_LOGE(TAG, "Failed to recover audio system");
+          }
+
+          // 等待用户看到错误信息
+          vTaskDelay(pdMS_TO_TICKS(5000));
+
+          // 升级失败后重启设备
+          ESP_LOGI(TAG, "Restarting device after upgrade failure...");
           esp_restart();
         });
       } else {
+        // 没有新版本，标记当前版本为有效
         ota_.MarkCurrentVersionValid();
-        // display->ShowNotification("版本 " + ota_.GetCurrentVersion());
+        ESP_LOGI(TAG, "Current version is up to date: %s", ota_.GetCurrentVersion().c_str());
       }
+
+      // 设置检查完成事件
+      xEventGroupSetBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT);
       return;
     }
 
-    // Check again in 60 seconds
-    vTaskDelay(pdMS_TO_TICKS(60000));
+    // 版本检查失败，记录错误并重试
+    ESP_LOGW(TAG, "Version check failed, retrying in 60 seconds...");
+
+    // 如果是网络问题，可能需要更长的重试间隔
+    static int retry_count = 0;
+    retry_count++;
+
+    if (retry_count >= 5) {
+      ESP_LOGE(TAG, "Version check failed %d times, extending retry interval", retry_count);
+      vTaskDelay(pdMS_TO_TICKS(300000)); // 5分钟后重试
+      retry_count = 0; // 重置计数器
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(60000)); // 60秒后重试
+    }
   }
 }
 
