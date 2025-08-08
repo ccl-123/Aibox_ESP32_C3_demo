@@ -55,7 +55,7 @@ bool Ota::CheckVersion() {
         http->SetContent(std::string(post_data_));
     }
     if (!http->Open(method, check_version_url_)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
+        ESP_LOGE(TAG, "Failed to open HTTP connection to %s", check_version_url_.c_str());
         delete http;
         return false;
     }
@@ -63,6 +63,8 @@ bool Ota::CheckVersion() {
     auto response = http->ReadAll();
     http->Close();
     delete http;
+    
+    ESP_LOGI(TAG, "OTA server response: %s", response.c_str());
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
     // Parse the JSON response and check if the version is newer
@@ -176,7 +178,11 @@ void Ota::Upgrade(const std::string& firmware_url) {
     auto http = Board::GetInstance().CreateHttp();
     ESP_LOGI(TAG, "Opening HTTP connection to: %s", firmware_url.c_str());
     if (!http->Open("GET", firmware_url)) {
+<<<<<<< HEAD
         ESP_LOGE(TAG, "Failed to open HTTP connection to: %s", firmware_url.c_str());
+=======
+        ESP_LOGE(TAG, "Failed to open HTTP connection to firmware URL: %s", firmware_url.c_str());
+>>>>>>> 971b269 (OTA二次修改)
         delete http;
         return;
     }
@@ -184,10 +190,13 @@ void Ota::Upgrade(const std::string& firmware_url) {
 
     size_t content_length = http->GetBodyLength();
     if (content_length == 0) {
-        ESP_LOGE(TAG, "Failed to get content length");
+        ESP_LOGE(TAG, "Failed to get content length, possibly invalid URL or server error");
+        http->Close();
         delete http;
         return;
     }
+    
+    ESP_LOGI(TAG, "Firmware size: %zu bytes", content_length);
 
     char buffer[512];
     size_t total_read = 0, recent_read = 0;
@@ -196,7 +205,11 @@ void Ota::Upgrade(const std::string& firmware_url) {
         int ret = http->Read(buffer, sizeof(buffer));
         if (ret < 0) {
             ESP_LOGE(TAG, "Failed to read HTTP data: %s", esp_err_to_name(ret));
+            http->Close();
             delete http;
+            if (update_handle) {
+                esp_ota_abort(update_handle);
+            }
             return;
         }
 
