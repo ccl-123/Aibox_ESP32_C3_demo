@@ -66,6 +66,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 
     // 根据设备ID和语言设置生成发布主题
     publish_topic_ = "stt/doll/" + user_id3 + "/" + saved_language;
+    ESP_LOGI(TAG, "Publish topic: %s", publish_topic_.c_str());
 
     // 检查MQTT服务器地址是否已配置
     if (endpoint_.empty()) {
@@ -87,6 +88,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 
     // 注册消息接收回调
     mqtt_->OnMessage([this, languagesType_topic, phone_control_topic, moan_topic](const std::string& topic, const std::string& payload) {
+        ESP_LOGI(TAG, "Received message on topic: %s, payload size: %zu", topic.c_str(), payload.size());
         // 根据主题处理不同的消息
         if (topic == subscribe_topic_) {
             // 如果是JSON消息 (以'{'开头)
@@ -306,8 +308,8 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
         ESP_LOGI(TAG, "Successfully sent audio packet in %u chunks", (unsigned)total_chunks);
     }
 
-    // 周期性输出统计信息，避免日志过于频繁（每50包一次，约每3秒）
-    if ((audio_stats_.total_packets % 50) == 0) {
+    // 周期性输出统计信息，避免日志过于频繁（每100包一次，约每3秒）
+    if ((audio_stats_.total_packets % 100) == 0) {
         LogAudioStats();
     }
 
