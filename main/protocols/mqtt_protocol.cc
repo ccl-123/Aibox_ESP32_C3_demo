@@ -308,8 +308,8 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
         ESP_LOGI(TAG, "Successfully sent audio packet in %u chunks", (unsigned)total_chunks);
     }
 
-    // 周期性输出统计信息，避免日志过于频繁（每50包一次，约每3秒）
-    if ((audio_stats_.total_packets % 50) == 0) {
+    // 周期性输出统计信息，避免日志过于频繁（每100包一次，约每3秒）
+    if ((audio_stats_.total_packets % 100) == 0) {
         LogAudioStats();
     }
 
