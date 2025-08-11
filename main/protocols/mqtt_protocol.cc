@@ -446,8 +446,6 @@ bool MqttProtocol::IsAudioChannelOpened() const {
 
 // 解析服务端VAD检测消息（JSON）
 void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
-    ESP_LOGI(TAG, "HandleVadDetectionMessage: %s", payload.c_str());
-
     cJSON* root = cJSON_Parse(payload.c_str());
     if (!root) {
         ESP_LOGE(TAG, "VAD detection: invalid JSON");

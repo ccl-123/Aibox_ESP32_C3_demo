@@ -536,17 +536,17 @@ void Application::Start() {
                 return;
             }
 
-            // 停止音频数据传输：清空待发送队列和时间戳队列
-            {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                size_t n = audio_send_queue_.size();
-                audio_send_queue_.clear();
-                ESP_LOGI(TAG, "[Server-VAD] cleared %u audio packets", (unsigned)n);
-            }
-            {
-                std::lock_guard<std::mutex> ts_lock(timestamp_mutex_);
-                timestamp_queue_.clear();
-            }
+            // // 停止音频数据传输：清空待发送队列和时间戳队列
+            // {
+            //         std::lock_guard<std::mutex> lock(mutex_);
+            //     size_t n = audio_send_queue_.size();
+            //     audio_send_queue_.clear();
+            //     ESP_LOGI(TAG, "[Server-VAD] cleared %u audio packets", (unsigned)n);
+            // }
+            // {
+            //     std::lock_guard<std::mutex> ts_lock(timestamp_mutex_);
+            //     timestamp_queue_.clear();
+            // }
 
             // 收到服务端 VAD END：仅清空队列，不做任何状态转换处理
             ESP_LOGI(TAG, "[Server-VAD] END received, cleared queues, no state change");
