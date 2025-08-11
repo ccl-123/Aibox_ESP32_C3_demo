@@ -68,6 +68,10 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     publish_topic_ = "stt/doll/" + user_id3 + "/" + saved_language;
     ESP_LOGI(TAG, "Publish topic: %s", publish_topic_.c_str());
 
+    // 生成服务端VAD检测订阅主题
+    vad_detection_topic_ = "speech/doll/" + user_id3;
+    ESP_LOGI(TAG, "VAD detection topic: %s", vad_detection_topic_.c_str());
+
     // 检查MQTT服务器地址是否已配置
     if (endpoint_.empty()) {
         ESP_LOGW(TAG, "MQTT endpoint is not specified");
@@ -89,7 +93,14 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     // 注册消息接收回调
     mqtt_->OnMessage([this, languagesType_topic, phone_control_topic, moan_topic](const std::string& topic, const std::string& payload) {
         ESP_LOGI(TAG, "Received message on topic: %s, payload size: %zu", topic.c_str(), payload.size());
-        // 根据主题处理不同的消息
+
+        // 1) 优先处理服务端VAD检测消息
+        if (topic == vad_detection_topic_) {
+            HandleVadDetectionMessage(payload);
+            return;
+        }
+
+        // 2) 处理原有主题
         if (topic == subscribe_topic_) {
             // 如果是JSON消息 (以'{'开头)
             if (!payload.empty() && payload[0] == '{') {
@@ -177,6 +188,9 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         ESP_LOGI(TAG, "languagesType_topic: %s", languagesType_topic.c_str());
         mqtt_->Subscribe(moan_topic, 0);
         ESP_LOGI(TAG, "moan_topic: %s", moan_topic.c_str());
+        // 新增订阅：服务端VAD检测主题
+        mqtt_->Subscribe(vad_detection_topic_, 1);
+        ESP_LOGI(TAG, "vad_detection_topic: %s", vad_detection_topic_.c_str());
     }
 
     return true;
@@ -309,9 +323,9 @@ bool MqttProtocol::SendAudio(const AudioStreamPacket& packet) {
     }
 
     // 周期性输出统计信息，避免日志过于频繁（每100包一次，约每3秒）
-    if ((audio_stats_.total_packets % 100) == 0) {
-        LogAudioStats();
-    }
+    // if ((audio_stats_.total_packets % 100) == 0) {
+    //     LogAudioStats();
+    // }
 
     return true;
 }
@@ -417,6 +431,57 @@ bool MqttProtocol::IsAudioChannelOpened() const {
     // 音频通道的状态等同于MQTT客户端的连接状态
     return mqtt_ != nullptr && mqtt_->IsConnected() && !error_occurred_;
 }
+
+// 解析服务端VAD检测消息（JSON）
+void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
+    ESP_LOGI(TAG, "HandleVadDetectionMessage: %s", payload.c_str());
+
+    cJSON* root = cJSON_Parse(payload.c_str());
+    if (!root) {
+        ESP_LOGE(TAG, "VAD detection: invalid JSON");
+        return;
+    }
+
+    auto cleanup = [&]() { cJSON_Delete(root); };
+
+    cJSON* type = cJSON_GetObjectItem(root, "type");
+    cJSON* trigger = cJSON_GetObjectItem(root, "trigger");
+    cJSON* message = cJSON_GetObjectItem(root, "message");
+    cJSON* language = cJSON_GetObjectItem(root, "language");
+    cJSON* ts = cJSON_GetObjectItem(root, "timestamp");
+
+    bool valid = type && cJSON_IsString(type) && strcmp(type->valuestring, "speech_end") == 0 &&
+                 trigger && cJSON_IsString(trigger) && strcmp(trigger->valuestring, "vad_detection") == 0 &&
+                 message && cJSON_IsString(message) && strcmp(message->valuestring, "END") == 0;
+
+    if (!valid) {
+        ESP_LOGW(TAG, "VAD detection: unexpected payload format");
+        cleanup();
+        return;
+    }
+
+    if (language && cJSON_IsString(language)) {
+        ESP_LOGI(TAG, "VAD language: %s", language->valuestring);
+    }
+    if (ts && (cJSON_IsNumber(ts) || cJSON_IsString(ts))) {
+        // 兼容 double 或字符串时间戳
+        ESP_LOGI(TAG, "VAD timestamp present");
+    }
+
+    HandleServerVadDetection();
+    cleanup();
+}
+
+// 服务端VAD检测处理 通知APP层（不做本地防抖）
+void MqttProtocol::HandleServerVadDetection() {
+    ESP_LOGI(TAG, "Server VAD detected speech end, notify application");
+    if (on_server_vad_detected_) {
+        on_server_vad_detected_();
+    } else {
+        ESP_LOGW(TAG, "on_server_vad_detected_ callback not set");
+    }
+}
+
 
 // 发送取消TTS（文本转语音）的请求
 void MqttProtocol::SendCancelTTS(bool f) {

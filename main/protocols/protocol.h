@@ -59,11 +59,13 @@ public:
     //FFF改用S3音频逻辑05
     void OnIncomingAudio(std::function<void(AudioStreamPacket&& packet)> callback);
     //void OnIncomingAudio(std::function<void(std::vector<uint8_t>&&)> callback);
-    
+
     void OnIncomingJson(std::function<void(const cJSON* root)> callback);
     void OnAudioChannelOpened(std::function<void()> callback);
     void OnAudioChannelClosed(std::function<void()> callback);
     void OnNetworkError(std::function<void(const std::string& message)> callback);
+    void OnServerVadDetected(std::function<void()> callback) { on_server_vad_detected_ = std::move(callback); }
+
 
     virtual bool Start() = 0;
     virtual bool OpenAudioChannel() = 0;
@@ -89,6 +91,9 @@ protected:
     int server_frame_duration_ = 60;
     bool error_occurred_ = false;
     std::string session_id_;
+
+    std::function<void()> on_server_vad_detected_;
+
     std::chrono::time_point<std::chrono::steady_clock> last_incoming_time_;
 
     virtual bool SendText(const std::string& text) = 0;

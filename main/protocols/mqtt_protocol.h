@@ -86,17 +86,17 @@ public:
 private:
     EventGroupHandle_t event_group_handle_;
 
-    // std::string publish_topic_;
+    std::string endpoint_;
+    std::string client_id_;
+    std::string username_;
+    std::string password_;
+    std::string subscribe_topic_;
+    std::string publish_topic_;
+    std::string languagesType_; // 保存语言
+    std::string user_id3_;
 
-    
-    std::string endpoint_;//F移植 添加
-    std::string client_id_;//F移植 添加
-    std::string username_;//F移植 添加
-    std::string password_;//F移植 添加
-    std::string subscribe_topic_;//F移植 添加
-    std::string publish_topic_;//F移植 添加
-    std::string languagesType_;//F移植 添加  // 用于保存 languagesType 值
-    std::string user_id3_;//F移植 添加
+    // 新增：服务端VAD检测相关
+    std::string vad_detection_topic_;
 
     std::mutex channel_mutex_;
     Mqtt* mqtt_ = nullptr;
@@ -108,14 +108,11 @@ private:
     uint32_t local_sequence_;
     uint32_t remote_sequence_;
 
-    //使用C3原版
-    //std::function<void(std::vector<uint8_t>&&)> on_incoming_audio_;//F移植 添加
-
     // 音量控制相关
-    std::string volume_control_value_;//F移植 添加
-    bool has_volume_control_ = false;//F移植 添加
+    std::string volume_control_value_;
+    bool has_volume_control_ = false;
     // 关机控制
-    bool shutdown_requested_ = false;//F移植 添加
+    bool shutdown_requested_ = false;
 
     // 音频传输统计实例
     AudioTransmissionStats audio_stats_;
@@ -126,9 +123,12 @@ private:
 
     bool SendText(const std::string& text) override;
 
-    // 从 NVS 读取语言类型 
-    std::string LoadLanguageTypeFromNVS();//F移植 添加
+    // 从 NVS 读取语言类型
+    std::string LoadLanguageTypeFromNVS();
 
+    // 处理服务端VAD检测消息
+    void HandleVadDetectionMessage(const std::string& payload);
+    void HandleServerVadDetection();
 
     std::string GetHelloMessage();
 };
