@@ -538,7 +538,7 @@ void Application::Start() {
 
             // 停止音频数据传输：清空待发送队列和时间戳队列
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock(mutex_);
                 size_t n = audio_send_queue_.size();
                 audio_send_queue_.clear();
                 ESP_LOGI(TAG, "[Server-VAD] cleared %u audio packets", (unsigned)n);
@@ -548,36 +548,8 @@ void Application::Start() {
                 timestamp_queue_.clear();
             }
 
-            // 更新本地VAD状态与指示
-            voice_detected_ = false;
-            if (auto led = Board::GetInstance().GetLed()) {
-                led->OnStateChanged();
-            }
-
-            // 根据监听模式处理状态转换
-            switch (listening_mode_) {
-                case kListeningModeAutoStop:
-                    ESP_LOGI(TAG, "[Server-VAD] AutoStop -> Idle");
-                    SetDeviceState(kDeviceStateIdle);
-                    // 停止音频处理器（C3还未集成AEC）
-                    audio_processor_->Stop();
-                    // 确保继续唤醒词检测
-                    if (wake_word_ && !wake_word_->IsDetectionRunning()) {
-                        wake_word_->StartDetection();
-                    }
-                    break;
-                case kListeningModeRealtime:
-                    ESP_LOGI(TAG, "[Server-VAD] Realtime -> keep Listening");
-                    // 保持监听，不做状态变化
-                    break;
-                case kListeningModeManualStop:
-                    ESP_LOGI(TAG, "[Server-VAD] ManualStop -> wait user action");
-                    // 等待用户手动停止
-                    break;
-                default:
-                    ESP_LOGW(TAG, "[Server-VAD] Unknown listening mode: %d", listening_mode_);
-                    break;
-            }
+            // 收到服务端 VAD END：仅清空队列，不做任何状态转换处理
+            ESP_LOGI(TAG, "[Server-VAD] END received, cleared queues, no state change");
         });
     });
 

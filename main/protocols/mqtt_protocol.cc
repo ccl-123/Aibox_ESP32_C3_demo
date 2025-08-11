@@ -92,7 +92,12 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 
     // 注册消息接收回调
     mqtt_->OnMessage([this, languagesType_topic, phone_control_topic, moan_topic](const std::string& topic, const std::string& payload) {
-        ESP_LOGI(TAG, "Received message on topic: %s, payload size: %zu", topic.c_str(), payload.size());
+        // 仅在收到 JSON 时输出日志；其它消息降为 DEBUG，避免播放/音频相关噪声日志
+        if (!payload.empty() && payload[0] == '{') {
+            ESP_LOGI(TAG, "JSON: %s", payload.c_str());
+        } else {
+            ESP_LOGD(TAG, "Non-JSON on %s (%u bytes)", topic.c_str(), (unsigned)payload.size());
+        }
 
         // 1) 优先处理服务端VAD检测消息
         if (topic == vad_detection_topic_) {
@@ -126,7 +131,14 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
                     // 直接将整个payload作为音频数据
                     packet.payload.assign(reinterpret_cast<const uint8_t*>(payload.data()),
                                          reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
+     
 
+                    // 每收到N帧才打印一次，默认N=100
+                    static uint32_t s_audio_log_counter = 0;
+                    if ((++s_audio_log_counter % 100) == 0) {
+                        ESP_LOGI(TAG, "AUDIO: recv opus frame sr=%d dur=%dms bytes=%u",
+                                 packet.sample_rate, packet.frame_duration, (unsigned)packet.payload.size());
+                    }
                     // 将构造的数据包传递给应用层
                     on_incoming_audio_(std::move(packet));
                 }
@@ -134,7 +146,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         }
         else if (topic == phone_control_topic) {
             // 处理手机控制消息
-            ESP_LOGI(TAG, "Received control message: %s", payload.c_str());
+            ESP_LOGD(TAG, "Received control message: %s", payload.c_str());
             cJSON* root = cJSON_Parse(payload.c_str());
             if (root != nullptr) {
                 if (on_incoming_json_ != nullptr) {
@@ -145,7 +157,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         }
         else if (topic == languagesType_topic) {
             // 处理语言设置消息
-            ESP_LOGI(TAG, "Received language setting: %s", payload.c_str());
+            ESP_LOGD(TAG, "Received language setting: %s", payload.c_str());
             cJSON* root = cJSON_Parse(payload.c_str());
             if (root != nullptr) {
                 if (on_incoming_json_ != nullptr) {
@@ -164,7 +176,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
             cJSON_Delete(root);
           }
         } else {
-          ESP_LOGW(TAG, "Unhandled topic: %s", topic.c_str());
+          ESP_LOGD(TAG, "Unhandled topic: %s", topic.c_str());
         }
     });
 
@@ -450,26 +462,15 @@ void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
     cJSON* language = cJSON_GetObjectItem(root, "language");
     cJSON* ts = cJSON_GetObjectItem(root, "timestamp");
 
-    bool valid = type && cJSON_IsString(type) && strcmp(type->valuestring, "speech_end") == 0 &&
-                 trigger && cJSON_IsString(trigger) && strcmp(trigger->valuestring, "vad_detection") == 0 &&
-                 message && cJSON_IsString(message) && strcmp(message->valuestring, "END") == 0;
-
-    if (!valid) {
-        ESP_LOGW(TAG, "VAD detection: unexpected payload format");
-        cleanup();
-        return;
+    bool is_end = type && cJSON_IsString(type) && strcmp(type->valuestring,"speech_end")==0;
+    bool trig_ok=false;
+    if (trigger && cJSON_IsString(trigger)) {
+      trig_ok = strcmp(trigger->valuestring,"vad_detection")==0 ||
+                strcmp(trigger->valuestring,"valid_speech_confirmed")==0;
     }
-
-    if (language && cJSON_IsString(language)) {
-        ESP_LOGI(TAG, "VAD language: %s", language->valuestring);
-    }
-    if (ts && (cJSON_IsNumber(ts) || cJSON_IsString(ts))) {
-        // 兼容 double 或字符串时间戳
-        ESP_LOGI(TAG, "VAD timestamp present");
-    }
-
-    HandleServerVadDetection();
-    cleanup();
+    bool msg_ok = message && cJSON_IsString(message) && strcasecmp(message->valuestring,"END")==0;
+    if (!(is_end && trig_ok && msg_ok)) { ESP_LOGW(TAG,"VAD detection: unexpected"); cleanup(); return; }
+    HandleServerVadDetection(); cleanup();
 }
 
 // 服务端VAD检测处理 通知APP层（不做本地防抖）
