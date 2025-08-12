@@ -26,10 +26,11 @@
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_NC
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_NC
 
-#define DISPLAY_SPI_SCK_PIN     GPIO_NUM_3
-#define DISPLAY_SPI_MOSI_PIN    GPIO_NUM_5
-#define DISPLAY_DC_PIN          GPIO_NUM_6
-#define DISPLAY_SPI_CS_PIN      GPIO_NUM_4
+// 本项目硬件无显示屏，GPIO3 可用于 AW9523 RSTN
+#define DISPLAY_SPI_SCK_PIN     GPIO_NUM_NC
+#define DISPLAY_SPI_MOSI_PIN    GPIO_NUM_NC
+#define DISPLAY_DC_PIN          GPIO_NUM_NC
+#define DISPLAY_SPI_CS_PIN      GPIO_NUM_NC
 
 #define DISPLAY_WIDTH   320
 #define DISPLAY_HEIGHT  240
@@ -43,5 +44,19 @@
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_2
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT true
 
+// ---------------- AW9523B IO 扩展配置 ----------------
+#define AW9523_I2C_ADDR   0x58
+#define AW9523_RST_GPIO   GPIO_NUM_3
+#define AW9523_INT_GPIO   GPIO_NUM_18
+
+// 方向寄存器建议配置：1=输入, 0=输出
+// P0: 按钮 SUCK(P0_0)/ON(P0_1)/VOL(P0_7) 输入，其余输出 LED4..7
+#define AW9523_CONFIG_P0  0x83  // b7,b1,b0 输入
+// P1: 全部输出（电机/加热/LED/检测/使能）
+#define AW9523_CONFIG_P1  0x00
+
+// 中断掩码：1 屏蔽，0 允许中断（仅对 P0_0/1/7 允许中断）
+#define AW9523_INTMASK_P0 0x7C  // ~0x83
+#define AW9523_INTMASK_P1 0xFF
 
 #endif // _BOARD_CONFIG_H_
