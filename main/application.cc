@@ -573,7 +573,8 @@ void Application::Start() {
     // });
     protocol_->OnIncomingAudio([this](AudioStreamPacket&& packet) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
+        // Ignore incoming audio when abort was requested
+        if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
             audio_decode_queue_.emplace_back(std::move(packet));
         }
     });
@@ -620,12 +621,12 @@ void Application::Start() {
                 ESP_LOGW(TAG, "--------------------GET STOP----------------------");
                 Schedule([this]() {
                     background_task_->WaitForCompletion();
-                    if (device_state_ == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
-                            SetDeviceState(kDeviceStateListening);
-                        }
+                    // Always honor stop even if speaking flag was not set due to ordering
+                    aborted_ = false; // clear abort flag to allow next round
+                    if (listening_mode_ == kListeningModeManualStop) {
+                        SetDeviceState(kDeviceStateIdle);
+                    } else {
+                        SetDeviceState(kDeviceStateListening);
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
@@ -1073,6 +1074,13 @@ void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
     protocol_->SendAbortSpeaking(reason);
+    // Immediately stop playback and clear queues; switch state out of speaking
+    ResetDecoder();
+    if (listening_mode_ == kListeningModeManualStop) {
+        SetDeviceState(kDeviceStateIdle);
+    } else {
+        SetDeviceState(kDeviceStateListening);
+    }
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
