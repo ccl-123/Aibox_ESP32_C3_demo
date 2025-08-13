@@ -536,20 +536,30 @@ void Application::Start() {
                 return;
             }
 
-            // // 停止音频数据传输：清空待发送队列和时间戳队列
-            // {
-            //         std::lock_guard<std::mutex> lock(mutex_);
-            //     size_t n = audio_send_queue_.size();
-            //     audio_send_queue_.clear();
-            //     ESP_LOGI(TAG, "[Server-VAD] cleared %u audio packets", (unsigned)n);
-            // }
-            // {
-            //     std::lock_guard<std::mutex> ts_lock(timestamp_mutex_);
-            //     timestamp_queue_.clear();
-            // }
+            // 检查音频处理器是否已经停止，避免重复处理
+            if (!audio_processor_->IsRunning()) {
+                ESP_LOGW(TAG, "[Server-VAD] audio processor already stopped, ignoring duplicate END");
+                return;
+            }
 
-            // 收到服务端 VAD END：仅清空队列，不做任何状态转换处理
-            ESP_LOGI(TAG, "[Server-VAD] END received, cleared queues, no state change");
+            // 1. 停止音频处理器，阻止新音频数据产生
+            audio_processor_->Stop();
+            ESP_LOGI(TAG, "[Server-VAD] stopped audio processor");
+
+            // 2. 停止音频数据传输：清空待发送队列和时间戳队列
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                size_t n = audio_send_queue_.size();
+                audio_send_queue_.clear();
+                ESP_LOGI(TAG, "[Server-VAD] cleared %u audio packets", (unsigned)n);
+            }
+            {
+                std::lock_guard<std::mutex> ts_lock(timestamp_mutex_);
+                timestamp_queue_.clear();
+            }
+
+            // 收到服务端 VAD END：停止音频上传
+            ESP_LOGI(TAG, "[Server-VAD] END received, stopped audio upload completely");
         });
     });
 
@@ -1123,8 +1133,8 @@ void Application::SetDeviceState(DeviceState state) {
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_processor_->Stop();
-                // Only AFE wake word can be detected in speaking mode
-#if CONFIG_USE_AFE_WAKE_WORD
+                // 启用唤醒词检测（AFE和ESP都支持在播放时唤醒）
+#if CONFIG_USE_AFE_WAKE_WORD || CONFIG_USE_ESP_WAKE_WORD
                 wake_word_->StartDetection();
 #else
                 wake_word_->StopDetection();

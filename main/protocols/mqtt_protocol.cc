@@ -133,9 +133,9 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
                                          reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
      
 
-                    // 每收到N帧才打印一次，默认N=100
+                    // 每收到N帧才打印一次，默认N=20
                     static uint32_t s_audio_log_counter = 0;
-                    if ((++s_audio_log_counter % 100) == 0) {
+                    if ((++s_audio_log_counter % 20) == 0) {
                         ESP_LOGI(TAG, "AUDIO: recv opus frame sr=%d dur=%dms bytes=%u",
                                  packet.sample_rate, packet.frame_duration, (unsigned)packet.payload.size());
                     }
