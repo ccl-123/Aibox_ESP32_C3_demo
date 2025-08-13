@@ -234,6 +234,45 @@ public:
     virtual Led* GetLed() override {
         return led_;
     }
+
+    // AW9523功能测试函数
+    void TestAw9523() {
+        if (!aw9523_) {
+            ESP_LOGE(TAG, "AW9523 not initialized");
+            return;
+        }
+
+        ESP_LOGI(TAG, "=== AW9523 功能测试开始 ===");
+
+        // 1. 读取输入状态
+        uint8_t p0_input, p1_input;
+        if (aw9523_->read_inputs(&p0_input, &p1_input) == ESP_OK) {
+            ESP_LOGI(TAG, "输入状态: P0=0x%02X, P1=0x%02X", p0_input, p1_input);
+
+            // 检查按钮状态（P0的0,1,7位）
+            bool btn_suck = (p0_input >> P0_BTN_SUCK_BIT) & 0x1;
+            bool btn_on = (p0_input >> P0_BTN_ON_BIT) & 0x1;
+            bool btn_vol = (p0_input >> P0_BTN_VOL_BIT) & 0x1;
+            ESP_LOGI(TAG, "按钮状态: SUCK=%d, ON=%d, VOL=%d", btn_suck, btn_on, btn_vol);
+        }
+
+        // 2. LED测试 - 循环点亮P0的输出位
+        ESP_LOGI(TAG, "LED测试: 循环点亮P0输出位");
+        for (int bit = 2; bit <= 6; bit++) {  // P0_2到P0_6是LED
+            aw9523_->digital_write(0, bit, true);   // 点亮
+            vTaskDelay(pdMS_TO_TICKS(200));
+            aw9523_->digital_write(0, bit, false);  // 熄灭
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        // 3. P1端口输出测试
+        ESP_LOGI(TAG, "P1端口输出测试");
+        aw9523_->write_outputs(1, 0xFF);  // 全部输出高
+        vTaskDelay(pdMS_TO_TICKS(500));
+        aw9523_->write_outputs(1, 0x00);  // 全部输出低
+
+        ESP_LOGI(TAG, "=== AW9523 功能测试完成 ===");
+    }
 };
 
 DECLARE_BOARD(LichuangC3DevBoard);
