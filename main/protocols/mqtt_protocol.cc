@@ -9,6 +9,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
+#include <cctype>
 
 #define TAG "MQTT"
 
@@ -444,11 +445,34 @@ bool MqttProtocol::IsAudioChannelOpened() const {
     return mqtt_ != nullptr && mqtt_->IsConnected() && !error_occurred_;
 }
 
-// 解析服务端VAD检测消息（JSON）
+// 解析服务端VAD检测消息（支持纯文本 "END" 或 JSON）
 void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
+    // 先兼容纯文本 END：去除首尾空白后匹配（大小写不敏感）
+    std::string trimmed = payload;
+    size_t i = 0, j = trimmed.size();
+    while (i < j && std::isspace((unsigned char)trimmed[i])) ++i;
+    while (j > i && std::isspace((unsigned char)trimmed[j - 1])) --j;
+    trimmed = trimmed.substr(i, j - i);
+    if (trimmed.size() == 3 &&
+        (trimmed[0] == 'E' || trimmed[0] == 'e') &&
+        (trimmed[1] == 'N' || trimmed[1] == 'n') &&
+        (trimmed[2] == 'D' || trimmed[2] == 'd')) {
+        ESP_LOGI(TAG, "VAD detection: plain END received");
+        HandleServerVadDetection();
+        return;
+    }
+
+    // 再按 JSON 解析
     cJSON* root = cJSON_Parse(payload.c_str());
     if (!root) {
-        ESP_LOGE(TAG, "VAD detection: invalid JSON");
+        ESP_LOGW(TAG, "VAD detection: invalid payload (neither plain END nor JSON)");
+        return;
+    }
+
+    // 兼容 JSON 字符串形式："END"
+    if (cJSON_IsString(root) && root->valuestring && strcasecmp(root->valuestring, "END") == 0) {
+        HandleServerVadDetection();
+        cJSON_Delete(root);
         return;
     }
 
@@ -467,8 +491,13 @@ void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
                 strcmp(trigger->valuestring,"valid_speech_confirmed")==0;
     }
     bool msg_ok = message && cJSON_IsString(message) && strcasecmp(message->valuestring,"END")==0;
-    if (!(is_end && trig_ok && msg_ok)) { ESP_LOGW(TAG,"VAD detection: unexpected"); cleanup(); return; }
-    HandleServerVadDetection(); cleanup();
+    if (!(is_end && trig_ok && msg_ok)) { 
+        ESP_LOGW(TAG,"VAD detection: unexpected"); 
+        cleanup(); 
+        return; 
+    }
+    HandleServerVadDetection(); 
+    cleanup();
 }
 
 // 服务端VAD检测处理 通知APP层（不做本地防抖）
