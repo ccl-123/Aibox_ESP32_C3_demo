@@ -528,7 +528,6 @@ void Application::Start() {
     // 新增：服务端VAD检测回调
     protocol_->OnServerVadDetected([this]() {
         Schedule([this]() {
-            ESP_LOGI(TAG, "[Server-VAD] speech_end received, handling on main thread");
 
             // 仅在监听状态下处理
             if (device_state_ != kDeviceStateListening) {
@@ -560,6 +559,19 @@ void Application::Start() {
 
             // 收到服务端 VAD END：停止音频上传
             ESP_LOGI(TAG, "[Server-VAD] END received, stopped audio upload completely");
+
+            // 防止收到END后没收到音频；等待一小段时间看是否进入下一轮（服务端下发 TTS.start 或音频）
+            // 若超时仍在 Listening 且采集未恢复，则主动恢复采集，避免卡死
+            background_task_->Schedule([this]() {
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                Schedule([this]() {
+                    if (device_state_ == kDeviceStateListening && !audio_processor_->IsRunning()) {
+                        opus_encoder_->ResetState();
+                        audio_processor_->Start();
+                        ESP_LOGI(TAG, "[Server-VAD] no TTS within timeout, resume audio_processor_");
+                    }
+                });
+            });
         });
     });
 
