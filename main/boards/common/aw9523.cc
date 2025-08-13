@@ -101,3 +101,21 @@ esp_err_t Aw9523::set_int_mask(uint8_t port, uint8_t mask) {
     return ESP_OK;
 }
 
+esp_err_t Aw9523::read_outputs(uint8_t* p0, uint8_t* p1) {
+    *p0 = ReadReg(REG_OUTPUT_P0);
+    *p1 = ReadReg(REG_OUTPUT_P1);
+    return ESP_OK;
+}
+
+esp_err_t Aw9523::read_config(uint8_t* p0, uint8_t* p1) {
+    *p0 = ReadReg(REG_CONFIG_P0);
+    *p1 = ReadReg(REG_CONFIG_P1);
+    return ESP_OK;
+}
+
+esp_err_t Aw9523::read_int_mask(uint8_t* p0, uint8_t* p1) {
+    *p0 = ReadReg(REG_INTMSK_P0);
+    *p1 = ReadReg(REG_INTMSK_P1);
+    return ESP_OK;
+}
+

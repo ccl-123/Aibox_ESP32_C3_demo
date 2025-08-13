@@ -95,13 +95,40 @@ private:
     }
 
     void InitializeAw9523() {
+        ESP_LOGI(TAG, "初始化AW9523B IO扩展芯片...");
+        ESP_LOGI(TAG, "硬件配置: RSTN=GPIO%d, INTN=GPIO%d, I2C地址=0x%02X",
+                 AW9523_RST_GPIO, AW9523_INT_GPIO, AW9523_I2C_ADDR);
+
         // 实例化与初始化 AW9523
         aw9523_ = new Aw9523(codec_i2c_bus_, AW9523_I2C_ADDR);
         // 方向配置：按功能映射（P0: 0x83 输入位; P1: 全输出）
         ESP_ERROR_CHECK(aw9523_->Init(AW9523_RST_GPIO, AW9523_CONFIG_P0, AW9523_CONFIG_P1, true));
+
+        // 读取芯片实际配置并打印
+        uint8_t actual_p0_config, actual_p1_config;
+        uint8_t actual_p0_mask, actual_p1_mask;
+        uint8_t actual_p0_input, actual_p1_input;
+        uint8_t actual_p0_output, actual_p1_output;
+
+        if (aw9523_->read_config(&actual_p0_config, &actual_p1_config) == ESP_OK) {
+            ESP_LOGI(TAG, "芯片实际端口配置: P0=0x%02X, P1=0x%02X", actual_p0_config, actual_p1_config);
+        }
+
         // 中断掩码：仅对按钮位开放中断
         aw9523_->set_int_mask(0, AW9523_INTMASK_P0);
         aw9523_->set_int_mask(1, AW9523_INTMASK_P1);
+
+        if (aw9523_->read_int_mask(&actual_p0_mask, &actual_p1_mask) == ESP_OK) {
+            ESP_LOGI(TAG, "芯片实际中断掩码: P0=0x%02X, P1=0x%02X", actual_p0_mask, actual_p1_mask);
+        }
+
+        if (aw9523_->read_inputs(&actual_p0_input, &actual_p1_input) == ESP_OK) {
+            ESP_LOGI(TAG, "芯片当前输入状态: P0=0x%02X, P1=0x%02X", actual_p0_input, actual_p1_input);
+        }
+
+        if (aw9523_->read_outputs(&actual_p0_output, &actual_p1_output) == ESP_OK) {
+            ESP_LOGI(TAG, "芯片当前输出状态: P0=0x%02X, P1=0x%02X", actual_p0_output, actual_p1_output);
+        }
 
         // 配置 INTN 引脚
         if (AW9523_INT_GPIO != GPIO_NUM_NC) {
@@ -123,6 +150,8 @@ private:
         }
 
         // 默认输出关断（已在 Init 内处理），可按需再次写入
+        ESP_LOGI(TAG, "AW9523B IO扩展芯片初始化完成");
+        ESP_LOGI(TAG, "功能映射: P0_0/1/7=按键输入, P0_2-6=LED输出, P1=电机/加热器控制");
     }
 
     static void IRAM_ATTR AwGpioIsrThunk(void* arg) {
@@ -235,44 +264,7 @@ public:
         return led_;
     }
 
-    // AW9523功能测试函数
-    void TestAw9523() {
-        if (!aw9523_) {
-            ESP_LOGE(TAG, "AW9523 not initialized");
-            return;
-        }
 
-        ESP_LOGI(TAG, "=== AW9523 功能测试开始 ===");
-
-        // 1. 读取输入状态
-        uint8_t p0_input, p1_input;
-        if (aw9523_->read_inputs(&p0_input, &p1_input) == ESP_OK) {
-            ESP_LOGI(TAG, "输入状态: P0=0x%02X, P1=0x%02X", p0_input, p1_input);
-
-            // 检查按钮状态（P0的0,1,7位）
-            bool btn_suck = (p0_input >> P0_BTN_SUCK_BIT) & 0x1;
-            bool btn_on = (p0_input >> P0_BTN_ON_BIT) & 0x1;
-            bool btn_vol = (p0_input >> P0_BTN_VOL_BIT) & 0x1;
-            ESP_LOGI(TAG, "按钮状态: SUCK=%d, ON=%d, VOL=%d", btn_suck, btn_on, btn_vol);
-        }
-
-        // 2. LED测试 - 循环点亮P0的输出位
-        ESP_LOGI(TAG, "LED测试: 循环点亮P0输出位");
-        for (int bit = 2; bit <= 6; bit++) {  // P0_2到P0_6是LED
-            aw9523_->digital_write(0, bit, true);   // 点亮
-            vTaskDelay(pdMS_TO_TICKS(200));
-            aw9523_->digital_write(0, bit, false);  // 熄灭
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-
-        // 3. P1端口输出测试
-        ESP_LOGI(TAG, "P1端口输出测试");
-        aw9523_->write_outputs(1, 0xFF);  // 全部输出高
-        vTaskDelay(pdMS_TO_TICKS(500));
-        aw9523_->write_outputs(1, 0x00);  // 全部输出低
-
-        ESP_LOGI(TAG, "=== AW9523 功能测试完成 ===");
-    }
 };
 
 DECLARE_BOARD(LichuangC3DevBoard);

@@ -822,23 +822,6 @@ void Application::Start() {
     // Print heap stats
     SystemInfo::PrintHeapStats();
 
-    // AW9523功能测试（仅在lichuang-c3-dev板上执行）
-    if (board.GetBoardType() == "lichuang-c3-dev") {
-        ESP_LOGI(TAG, "将在5秒后执行AW9523功能测试...");
-        // 延迟5秒后执行测试，确保系统稳定
-        Schedule([]() {
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            ESP_LOGI(TAG, "=== AW9523 功能测试开始 ===");
-            ESP_LOGI(TAG, "AW9523已成功初始化并配置");
-            ESP_LOGI(TAG, "- RSTN: GPIO3 (复位成功)");
-            ESP_LOGI(TAG, "- INTN: GPIO18 (中断配置成功)");
-            ESP_LOGI(TAG, "- I2C地址: 0x58");
-            ESP_LOGI(TAG, "- P0配置: 0x83 (P0_0/1/7输入，其余输出)");
-            ESP_LOGI(TAG, "- P1配置: 0x00 (全部输出)");
-            ESP_LOGI(TAG, "=== AW9523 功能测试完成 ===");
-        });
-    }
-
     // Enter the main event loop
     MainEventLoop();
 }

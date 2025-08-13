@@ -28,6 +28,9 @@ public:
 
     // 批量寄存器访问（便于中断服务后的快速轮询）
     esp_err_t read_inputs(uint8_t* p0, uint8_t* p1);
+    esp_err_t read_outputs(uint8_t* p0, uint8_t* p1);
+    esp_err_t read_config(uint8_t* p0, uint8_t* p1);
+    esp_err_t read_int_mask(uint8_t* p0, uint8_t* p1);
     esp_err_t write_outputs(uint8_t port, uint8_t value);
 
     // 中断屏蔽配置：mask=1 表示屏蔽，0 表示产生中断（请按实际数据手册确认）
