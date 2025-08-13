@@ -981,13 +981,28 @@ void Application::OnAudioInput() {
 
     if (wake_word_->IsDetectionRunning()) {
         std::vector<int16_t> data;
-        int samples = wake_word_->GetFeedSize();
-        if (samples > 0) {
-            if (ReadAudio(data, 16000, samples)) {
-                //ESP_LOGW(TAG, "==------ ReadAudio  ------==");
-                //ESP_LOGW(TAG, "Feed wake word with audio, size=%d", data.size());
-                wake_word_->Feed(data);
-                //ESP_LOGW(TAG, "Feed wake word with audio, size=%d", data.size());
+        int mono_samples = wake_word_->GetFeedSize();
+        if (mono_samples > 0) {
+            // Ensure input is enabled in case some board/power path disabled it
+            auto codec = Board::GetInstance().GetAudioCodec();
+            if (!codec->input_enabled()) {
+                codec->EnableInput(true);
+            }
+
+            int input_channels = codec->input_channels();
+            int capture_samples = mono_samples * (input_channels > 1 ? input_channels : 1);
+            if (ReadAudio(data, 16000, capture_samples)) {
+                if (input_channels > 1) {
+                    // Down-mix to mono: pick MIC channel from interleaved data
+                    std::vector<int16_t> mono;
+                    mono.reserve(mono_samples);
+                    for (int i = 0; i < mono_samples; ++i) {
+                        mono.push_back(data[i * input_channels]);
+                    }
+                    wake_word_->Feed(mono);
+                } else {
+                    wake_word_->Feed(data);
+                }
                 return;
             }
         }
