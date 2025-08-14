@@ -525,7 +525,7 @@ void Application::Start() {
         Alert(Lang::Strings::ERROR, message.c_str(), "sad", Lang::Sounds::P3_EXCLAMATION);
     });
 
-    // 新增：服务端VAD检测回调
+    // 新增：服务端VAD检测回调 - 直接转Speaking状态
     protocol_->OnServerVadDetected([this]() {
         Schedule([this]() {
 
@@ -535,40 +535,18 @@ void Application::Start() {
                 return;
             }
 
-            // 检查音频处理器是否已经停止，避免重复处理
-            if (!audio_processor_->IsRunning()) {
-                ESP_LOGW(TAG, "[Server-VAD] audio processor already stopped, ignoring duplicate END");
-                return;
-            }
+            ESP_LOGI(TAG, "[Server-VAD] END received, transitioning to Speaking state");
 
-            // 1. 停止音频处理器，阻止新音频数据产生
-            audio_processor_->Stop();
-            ESP_LOGI(TAG, "[Server-VAD] stopped audio processor");
+            // 直接转换到Speaking状态
+            SetDeviceState(kDeviceStateSpeaking);
 
-            // 2. 停止音频数据传输：清空待发送队列和时间戳队列
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                size_t n = audio_send_queue_.size();
-                audio_send_queue_.clear();
-                ESP_LOGI(TAG, "[Server-VAD] cleared %u audio packets", (unsigned)n);
-            }
-            {
-                std::lock_guard<std::mutex> ts_lock(timestamp_mutex_);
-                timestamp_queue_.clear();
-            }
-
-            // 收到服务端 VAD END：停止音频上传
-            ESP_LOGI(TAG, "[Server-VAD] END received, stopped audio upload completely");
-
-            // 防止收到END后没收到音频；等待一小段时间看是否进入下一轮（服务端下发 TTS.start 或音频）
-            // 若超时仍在 Listening 且采集未恢复，则主动恢复采集，避免卡死
+            // TTS超时保护：如果5秒内没收到TTS，回到Idle状态
             background_task_->Schedule([this]() {
-                vTaskDelay(pdMS_TO_TICKS(2000));
+                vTaskDelay(pdMS_TO_TICKS(5000));
                 Schedule([this]() {
-                    if (device_state_ == kDeviceStateListening && !audio_processor_->IsRunning()) {
-                        opus_encoder_->ResetState();
-                        audio_processor_->Start();
-                        ESP_LOGI(TAG, "[Server-VAD] no TTS within timeout, resume audio_processor_");
+                    if (device_state_ == kDeviceStateSpeaking && audio_decode_queue_.empty()) {
+                        ESP_LOGW(TAG, "[Server-VAD] TTS timeout, returning to Idle state");
+                        SetDeviceState(kDeviceStateIdle);
                     }
                 });
             });
@@ -625,7 +603,7 @@ void Application::Start() {
                 ESP_LOGW(TAG, "--------------------GET START----------------------");
                 Schedule([this]() {
                     aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening || device_state_ == kDeviceStateSpeaking) {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });
