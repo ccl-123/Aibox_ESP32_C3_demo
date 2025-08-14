@@ -112,7 +112,8 @@ private:
     BackgroundTask* background_task_ = nullptr;
     std::chrono::steady_clock::time_point last_output_time_;
     std::list<AudioStreamPacket> audio_send_queue_;
-    std::list<AudioStreamPacket> audio_decode_queue_;
+    // 优化：使用原始数据队列，避免AudioStreamPacket封装开销
+    std::list<std::vector<uint8_t>> audio_decode_queue_;
     std::condition_variable audio_decode_cv_;
     std::list<AudioStreamPacket> audio_testing_queue_;
 

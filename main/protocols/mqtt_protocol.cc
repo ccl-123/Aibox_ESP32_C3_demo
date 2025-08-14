@@ -120,28 +120,23 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
                 }
             } else {
                 // 否则，视为音频数据包（服务器发送纯OPUS payload）
+                // 直接传递原始数据，避免AudioStreamPacket封装开销
                 if (on_incoming_audio_ != nullptr) {
-                    // 构造AudioStreamPacket结构体
-                    AudioStreamPacket packet;
+                    // 直接将payload转换为原始音频数据
+                    std::vector<uint8_t> raw_data(reinterpret_cast<const uint8_t*>(payload.data()),
+                                                 reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
 
-                    // 设置固定的默认值
-                    packet.sample_rate = 16000;
-                    packet.frame_duration = 60;
-                    packet.timestamp = 0;  // 服务器下传音频无时间戳
-
-                    // 直接将整个payload作为音频数据
-                    packet.payload.assign(reinterpret_cast<const uint8_t*>(payload.data()),
-                                         reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-     
-
-                    // 每收到N帧才打印一次，默认N=30
+                    // 详细记录每个音频包的接收情况
                     static uint32_t s_audio_log_counter = 0;
-                    if ((++s_audio_log_counter % 30) == 0) {
-                        ESP_LOGI(TAG, "AUDIO: recv opus frame sr=%d dur=%dms bytes=%u",
-                                 packet.sample_rate, packet.frame_duration, (unsigned)packet.payload.size());
-                    }
-                    // 将构造的数据包传递给应用层
-                    on_incoming_audio_(std::move(packet));
+                    static auto s_last_audio_time = std::chrono::steady_clock::now();
+                    auto current_time = std::chrono::steady_clock::now();
+                    auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - s_last_audio_time).count();
+                    s_last_audio_time = current_time;
+
+                    // ESP_LOGI(TAG, "AUDIO: recv opus frame #%" PRIu32 ": bytes=%zu, interval=%lldms",
+                    //          ++s_audio_log_counter, raw_data.size(), interval_ms);
+                    // 直接传递原始数据给应用层，避免packet封装
+                    on_incoming_audio_(std::move(raw_data));
                 }
             }
         }

@@ -320,15 +320,13 @@ void Application::PlaySound(const std::string_view& sound) {
         p += sizeof(BinaryProtocol3);
 
         auto payload_size = ntohs(p3->payload_size);
-        AudioStreamPacket packet;
-        packet.sample_rate = 16000;
-        packet.frame_duration = 60;
-        packet.payload.resize(payload_size);
-        memcpy(packet.payload.data(), p3->payload, payload_size);
+        // 优化：直接提取原始音频数据，避免AudioStreamPacket封装
+        std::vector<uint8_t> raw_data(payload_size);
+        memcpy(raw_data.data(), p3->payload, payload_size);
         p += payload_size;
 
         std::lock_guard<std::mutex> lock(mutex_);
-        audio_decode_queue_.emplace_back(std::move(packet));
+        audio_decode_queue_.emplace_back(std::move(raw_data));
     }
 }
 
@@ -341,9 +339,12 @@ void Application::EnterAudioTestingMode() {
 void Application::ExitAudioTestingMode() {
     ESP_LOGI(TAG, "Exiting audio testing mode");
     SetDeviceState(kDeviceStateWifiConfiguring);
-    // Copy audio_testing_queue_ to audio_decode_queue_
+    // 优化：将audio_testing_queue_转换为原始数据格式
     std::lock_guard<std::mutex> lock(mutex_);
-    audio_decode_queue_ = std::move(audio_testing_queue_);
+    for (auto& packet : audio_testing_queue_) {
+        audio_decode_queue_.emplace_back(std::move(packet.payload));
+    }
+    audio_testing_queue_.clear();
     audio_decode_cv_.notify_all();
 }
 
@@ -553,19 +554,36 @@ void Application::Start() {
         });
     });
 
-    // protocol_->OnIncomingAudio([this](std::vector<uint8_t>&& data) {
-    // std::lock_guard<std::mutex> lock(mutex_);
-    // if (device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
-    //     AudioStreamPacket packet;
-    //     packet.payload = std::move(data);
-    //     audio_decode_queue_.emplace_back(std::move(packet));
-    //     }
-    // });
-    protocol_->OnIncomingAudio([this](AudioStreamPacket&& packet) {
+
+    protocol_->OnIncomingAudio([this](std::vector<uint8_t>&& raw_data) {
+        static uint32_t packet_counter = 0;
+        static auto last_packet_time = std::chrono::steady_clock::now();
+        auto current_time = std::chrono::steady_clock::now();
+        auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
+        last_packet_time = current_time;
+
         std::lock_guard<std::mutex> lock(mutex_);
-        // Ignore incoming audio when abort was requested
+
+        // 详细日志：每个包都记录，便于分析服务端发送间隔
+        ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%zu bytes, interval=%lldms, state=%d, queue=%zu/%d, busy=%d",
+                 ++packet_counter, raw_data.size(), interval_ms, device_state_,
+                 audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, busy_decoding_audio_ ? 1 : 0);
+
+        // 检查是否应该接收音频数据
         if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
-            audio_decode_queue_.emplace_back(std::move(packet));
+            audio_decode_queue_.emplace_back(std::move(raw_data));
+            ESP_LOGI(TAG, "[AUDIO-RX] ✓ Added packet to queue, new size: %zu/%d",
+                     audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+        } else {
+            // 详细记录丢包原因
+            const char* drop_reason = "unknown";
+            if (aborted_) drop_reason = "aborted";
+            else if (device_state_ != kDeviceStateSpeaking) drop_reason = "wrong_state";
+            else if (audio_decode_queue_.size() >= MAX_AUDIO_PACKETS_IN_QUEUE) drop_reason = "queue_full";
+
+            ESP_LOGW(TAG, "[AUDIO-RX] ✗ DROPPED packet - reason:%s, aborted:%d state:%d queue_size:%zu/%d busy:%d",
+                     drop_reason, aborted_ ? 1 : 0, device_state_, audio_decode_queue_.size(),
+                     MAX_AUDIO_PACKETS_IN_QUEUE, busy_decoding_audio_ ? 1 : 0);
         }
     });
 
@@ -601,12 +619,12 @@ void Application::Start() {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
                 ESP_LOGW(TAG, "--------------------GET START----------------------");
-                Schedule([this]() {
-                    aborted_ = false;
-                    if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening || device_state_ == kDeviceStateSpeaking) {
-                        SetDeviceState(kDeviceStateSpeaking);
-                    }
-                });
+                // 立即切换状态，避免音频数据在状态切换前被丢弃
+                aborted_ = false;
+                if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening || device_state_ == kDeviceStateSpeaking) {
+                    ESP_LOGI(TAG, "[TTS-START] Immediately switching to speaking state to avoid packet drops");
+                    SetDeviceState(kDeviceStateSpeaking);
+                }
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 ESP_LOGW(TAG, "--------------------GET STOP----------------------");
                 Schedule([this]() {
@@ -891,6 +909,7 @@ void Application::AudioLoop() {
 
 void Application::OnAudioOutput() {
     if (busy_decoding_audio_) {
+        ESP_LOGD(TAG, "[AUDIO-OUT] Busy decoding, skipping");
         return;
     }
 
@@ -910,36 +929,64 @@ void Application::OnAudioOutput() {
         return;
     }
 
-    auto packet = std::move(audio_decode_queue_.front());
+    // 优化：直接处理原始音频数据，避免packet解包开销
+    auto raw_data = std::move(audio_decode_queue_.front());
     audio_decode_queue_.pop_front();
+    size_t remaining_queue_size = audio_decode_queue_.size();
     lock.unlock();
     audio_decode_cv_.notify_all();
 
-    // Synchronize the sample rate and frame duration
-    SetDecodeSampleRate(packet.sample_rate, packet.frame_duration);
+    ESP_LOGI(TAG, "[AUDIO-OUT] Processing packet: size=%zu bytes, remaining in queue: %zu, busy: %d",
+             raw_data.size(), remaining_queue_size, busy_decoding_audio_ ? 1 : 0);
 
     busy_decoding_audio_ = true;
-    background_task_->Schedule([this, codec, packet = std::move(packet)]() mutable {
+    auto decode_start_time = std::chrono::steady_clock::now();
+
+    background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
+        auto decode_task_start = std::chrono::steady_clock::now();
+        auto schedule_delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(decode_task_start - decode_start_time).count();
+
         busy_decoding_audio_ = false;
         if (aborted_) {
+            ESP_LOGW(TAG, "[AUDIO-OUT] Decode task aborted");
             return;
         }
 
+        auto opus_decode_start = std::chrono::steady_clock::now();
         std::vector<int16_t> pcm;
-        if (!opus_decoder_->Decode(std::move(packet.payload), pcm)) {
+        // 直接解码原始数据，固定参数：16000Hz, 60ms, 1通道
+        if (!opus_decoder_->Decode(std::move(raw_data), pcm)) {
+            ESP_LOGE(TAG, "[AUDIO-OUT] OPUS decode failed");
             return;
         }
+        auto opus_decode_end = std::chrono::steady_clock::now();
+        auto opus_decode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(opus_decode_end - opus_decode_start).count();
+
         // Resample if the sample rate is different
+        auto resample_start = std::chrono::steady_clock::now();
         if (opus_decoder_->sample_rate() != codec->output_sample_rate()) {
             int target_size = output_resampler_.GetOutputSamples(pcm.size());
             std::vector<int16_t> resampled(target_size);
             output_resampler_.Process(pcm.data(), pcm.size(), resampled.data());
             pcm = std::move(resampled);
         }
+        auto resample_end = std::chrono::steady_clock::now();
+        auto resample_ms = std::chrono::duration_cast<std::chrono::milliseconds>(resample_end - resample_start).count();
+
+        auto output_start = std::chrono::steady_clock::now();
         codec->OutputData(pcm);
+        auto output_end = std::chrono::steady_clock::now();
+        auto output_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - output_start).count();
+
+        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - decode_start_time).count();
+
+        ESP_LOGI(TAG, "[AUDIO-OUT] ✓ Decode complete: schedule_delay=%lldms, opus=%lldms, resample=%lldms, output=%lldms, total=%lldms, pcm_samples=%zu",
+                 schedule_delay_ms, opus_decode_ms, resample_ms, output_ms, total_ms, pcm.size());
+
 #ifdef CONFIG_USE_SERVER_AEC
+        // 原始数据没有时间戳，使用当前时间
         std::lock_guard<std::mutex> lock(timestamp_mutex_);
-        timestamp_queue_.push_back(packet.timestamp);
+        timestamp_queue_.push_back(0);
 #endif
         last_output_time_ = std::chrono::steady_clock::now();
     });
@@ -1164,11 +1211,15 @@ void Application::SetDeviceState(DeviceState state) {
 void Application::ResetDecoder() {
     std::lock_guard<std::mutex> lock(mutex_);
     opus_decoder_->ResetState();
+    // 优化：清理原始音频数据队列
+    size_t cleared_packets = audio_decode_queue_.size();
     audio_decode_queue_.clear();
     audio_decode_cv_.notify_all();
     last_output_time_ = std::chrono::steady_clock::now();
     auto codec = Board::GetInstance().GetAudioCodec();
     codec->EnableOutput(true);
+
+    ESP_LOGI(TAG, "[AUDIO-RESET] Decoder reset, cleared %zu packets, output enabled", cleared_packets);
 }
 
 void Application::SetDecodeSampleRate(int sample_rate, int frame_duration) {

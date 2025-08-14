@@ -56,9 +56,8 @@ public:
         return session_id_;
     }
 
-    //FFF改用S3音频逻辑05
-    void OnIncomingAudio(std::function<void(AudioStreamPacket&& packet)> callback);
-    //void OnIncomingAudio(std::function<void(std::vector<uint8_t>&&)> callback);
+    // 直接处理原始音频数据的接口，避免packet封装开销
+    void OnIncomingAudio(std::function<void(std::vector<uint8_t>&& raw_data)> callback);
 
     void OnIncomingJson(std::function<void(const cJSON* root)> callback);
     void OnAudioChannelOpened(std::function<void()> callback);
@@ -82,7 +81,7 @@ public:
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;
-    std::function<void(AudioStreamPacket&& packet)> on_incoming_audio_;
+    std::function<void(std::vector<uint8_t>&& raw_data)> on_incoming_audio_;
     std::function<void()> on_audio_channel_opened_;
     std::function<void()> on_audio_channel_closed_;
     std::function<void(const std::string& message)> on_network_error_;
