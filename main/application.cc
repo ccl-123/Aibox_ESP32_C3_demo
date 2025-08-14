@@ -565,15 +565,15 @@ void Application::Start() {
         std::lock_guard<std::mutex> lock(mutex_);
 
         // 详细日志：每个包都记录，便于分析服务端发送间隔
-        ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%zu bytes, interval=%lldms, state=%d, queue=%zu/%d, active_tasks=%d",
-                 ++packet_counter, raw_data.size(), interval_ms, device_state_,
-                 audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
+        ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
+                 ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
+                 (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
 
         // 检查是否应该接收音频数据
         if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
             audio_decode_queue_.emplace_back(std::move(raw_data));
-            ESP_LOGI(TAG, "[AUDIO-RX] ✓ Added packet to queue, new size: %zu/%d",
-                     audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+            ESP_LOGI(TAG, "[AUDIO-RX] ✅ Added packet to queue, 📦NEW_SIZE=[%u/%d]",
+                     (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
         } else {
             // 详细记录丢包原因
             const char* drop_reason = "unknown";
@@ -581,8 +581,8 @@ void Application::Start() {
             else if (device_state_ != kDeviceStateSpeaking) drop_reason = "wrong_state";
             else if (audio_decode_queue_.size() >= MAX_AUDIO_PACKETS_IN_QUEUE) drop_reason = "queue_full";
 
-            ESP_LOGW(TAG, "[AUDIO-RX] ✗ DROPPED packet - reason:%s, aborted:%d state:%d queue_size:%zu/%d active_tasks=%d",
-                     drop_reason, aborted_ ? 1 : 0, device_state_, audio_decode_queue_.size(),
+            ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROPPED packet - reason:%s, aborted:%d state:%d 📦QUEUE=[%u/%d] 🔧TASKS=%d",
+                     drop_reason, aborted_ ? 1 : 0, device_state_, (unsigned)audio_decode_queue_.size(),
                      MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
         }
     });
@@ -915,7 +915,7 @@ void Application::OnAudioOutput() {
     // 改进：检查并发解码任务数，而不是简单的busy标志
     int current_tasks = active_decode_tasks_.load();
     if (current_tasks >= MAX_CONCURRENT_DECODE_TASKS) {
-        ESP_LOGD(TAG, "[AUDIO-OUT] Max concurrent tasks reached (%d/%d), skipping",
+        ESP_LOGD(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping",
                  current_tasks, MAX_CONCURRENT_DECODE_TASKS);
         return;
     }
@@ -943,13 +943,13 @@ void Application::OnAudioOutput() {
     lock.unlock();
     audio_decode_cv_.notify_all();
 
-    ESP_LOGI(TAG, "[AUDIO-OUT] Processing packet: size=%zu bytes, remaining in queue: %zu, active_tasks: %d",
-             raw_data.size(), remaining_queue_size, active_decode_tasks_.load());
+    ESP_LOGI(TAG, "[AUDIO-OUT] 🎵 Processing packet: size=%u bytes, 📦REMAINING=[%u], 🔧TASKS=%d",
+             (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
     // 改进：使用原子计数器管理并发任务
     active_decode_tasks_.fetch_add(1);
     auto decode_start_time = std::chrono::steady_clock::now();
-    ESP_LOGI(TAG, "[AUDIO-OUT] Starting decode task %d/%d",
+    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task [%d/%d]",
              active_decode_tasks_.load(), MAX_CONCURRENT_DECODE_TASKS);
 
     background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
@@ -991,8 +991,8 @@ void Application::OnAudioOutput() {
 
         auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - decode_start_time).count();
 
-        ESP_LOGI(TAG, "[AUDIO-OUT] ✓ Decode complete: schedule_delay=%lldms, opus=%lldms, resample=%lldms, output=%lldms, total=%lldms, pcm_samples=%zu, remaining_tasks=%d",
-                 schedule_delay_ms, opus_decode_ms, resample_ms, output_ms, total_ms, pcm.size(), remaining_tasks);
+        ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, output=%dms, total=%dms, pcm_samples=%u, 🔧REMAINING_TASKS=[%d]",
+                 (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)output_ms, (int)total_ms, (unsigned)pcm.size(), remaining_tasks);
 
 #ifdef CONFIG_USE_SERVER_AEC
         // 原始数据没有时间戳，使用当前时间
@@ -1230,7 +1230,7 @@ void Application::ResetDecoder() {
     auto codec = Board::GetInstance().GetAudioCodec();
     codec->EnableOutput(true);
 
-    ESP_LOGI(TAG, "[AUDIO-RESET] Decoder reset, cleared %zu packets, output enabled", cleared_packets);
+    ESP_LOGI(TAG, "[AUDIO-RESET] 🔄 Decoder reset, 📦CLEARED=[%u] packets, output enabled", (unsigned)cleared_packets);
 }
 
 void Application::SetDecodeSampleRate(int sample_rate, int frame_duration) {
