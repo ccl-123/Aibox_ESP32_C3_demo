@@ -103,7 +103,7 @@ private:
     bool has_server_time_ = false;
     bool aborted_ = false;
     bool voice_detected_ = false;
-    bool busy_decoding_audio_ = false;
+    // 移除：bool busy_decoding_audio_ = false;  // 已用active_decode_tasks_替代
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
 
@@ -116,6 +116,10 @@ private:
     std::list<std::vector<uint8_t>> audio_decode_queue_;
     std::condition_variable audio_decode_cv_;
     std::list<AudioStreamPacket> audio_testing_queue_;
+
+    // 改进：并发解码控制，允许多个包同时处理
+    std::atomic<int> active_decode_tasks_{0};  // 当前活跃的解码任务数
+    static constexpr int MAX_CONCURRENT_DECODE_TASKS = 3;  // 最大并发解码任务数
 
     // 新增：用于维护音频包的timestamp队列
     std::list<uint32_t> timestamp_queue_;
