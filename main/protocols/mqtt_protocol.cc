@@ -452,7 +452,7 @@ void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
         (trimmed[0] == 'E' || trimmed[0] == 'e') &&
         (trimmed[1] == 'N' || trimmed[1] == 'n') &&
         (trimmed[2] == 'D' || trimmed[2] == 'd')) {
-        ESP_LOGI(TAG, "VAD detection: plain END received");
+        ESP_LOGI(TAG, "VAD detection: ----------------------------plain END received----------------------------");
         HandleServerVadDetection();
         return;
     }

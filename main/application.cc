@@ -541,16 +541,6 @@ void Application::Start() {
             // 直接转换到Speaking状态
             SetDeviceState(kDeviceStateSpeaking);
 
-            // TTS超时保护：如果5秒内没收到TTS，回到Idle状态
-            background_task_->Schedule([this]() {
-                vTaskDelay(pdMS_TO_TICKS(5000));
-                Schedule([this]() {
-                    if (device_state_ == kDeviceStateSpeaking && audio_decode_queue_.empty()) {
-                        ESP_LOGW(TAG, "[Server-VAD] TTS timeout, returning to Idle state");
-                        SetDeviceState(kDeviceStateIdle);
-                    }
-                });
-            });
         });
     });
 
@@ -912,11 +902,11 @@ void Application::AudioLoop() {
 }
 
 void Application::OnAudioOutput() {
-    // 改进：检查并发解码任务数，而不是简单的busy标志
+    // 修复：检查并发解码任务数，但允许一定的队列积压处理
     int current_tasks = active_decode_tasks_.load();
     if (current_tasks >= MAX_CONCURRENT_DECODE_TASKS) {
-        ESP_LOGD(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping",
-                 current_tasks, MAX_CONCURRENT_DECODE_TASKS);
+        ESP_LOGW(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping - QUEUE_SIZE=%u",
+                 current_tasks, MAX_CONCURRENT_DECODE_TASKS, (unsigned)audio_decode_queue_.size());
         return;
     }
 
@@ -946,20 +936,20 @@ void Application::OnAudioOutput() {
     ESP_LOGI(TAG, "[AUDIO-OUT] 🎵 Processing packet: size=%u bytes, 📦REMAINING=[%u], 🔧TASKS=%d",
              (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
-    // 改进：使用原子计数器管理并发任务
-    active_decode_tasks_.fetch_add(1);
     auto decode_start_time = std::chrono::steady_clock::now();
-    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task [%d/%d]",
-             active_decode_tasks_.load(), MAX_CONCURRENT_DECODE_TASKS);
+    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
+             (unsigned)remaining_queue_size);
 
     background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
         auto decode_task_start = std::chrono::steady_clock::now();
         auto schedule_delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(decode_task_start - decode_start_time).count();
 
-        // 改进：使用原子计数器，在任务开始时就减少计数
-        int remaining_tasks = active_decode_tasks_.fetch_sub(1) - 1;
+        // 修复：在任务真正开始执行时才管理计数器
+        active_decode_tasks_.fetch_add(1);
+        int current_tasks = active_decode_tasks_.load();
         if (aborted_) {
-            ESP_LOGW(TAG, "[AUDIO-OUT] Decode task aborted, remaining tasks: %d", remaining_tasks);
+            active_decode_tasks_.fetch_sub(1);
+            ESP_LOGW(TAG, "[AUDIO-OUT] Decode task aborted, remaining tasks: %d", current_tasks - 1);
             return;
         }
 
@@ -968,6 +958,7 @@ void Application::OnAudioOutput() {
         // 直接解码原始数据，固定参数：16000Hz, 60ms, 1通道
         if (!opus_decoder_->Decode(std::move(raw_data), pcm)) {
             ESP_LOGE(TAG, "[AUDIO-OUT] OPUS decode failed");
+            active_decode_tasks_.fetch_sub(1);
             return;
         }
         auto opus_decode_end = std::chrono::steady_clock::now();
@@ -991,6 +982,8 @@ void Application::OnAudioOutput() {
 
         auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - decode_start_time).count();
 
+        // 任务完成，减少计数器
+        int remaining_tasks = active_decode_tasks_.fetch_sub(1) - 1;
         ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, output=%dms, total=%dms, pcm_samples=%u, 🔧REMAINING_TASKS=[%d]",
                  (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)output_ms, (int)total_ms, (unsigned)pcm.size(), remaining_tasks);
 
