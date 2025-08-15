@@ -570,9 +570,9 @@ void Application::Start() {
         std::lock_guard<std::mutex> lock(mutex_);
 
         // 详细日志：每个包都记录，便于分析服务端发送间隔
-        ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
-                 ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
-                 (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
+        // ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
+        //          ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
+        //          (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
 
         // 检查是否应该接收音频数据
         if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
@@ -948,12 +948,12 @@ void Application::OnAudioOutput() {
     lock.unlock();
     audio_decode_cv_.notify_all();
 
-    ESP_LOGI(TAG, "[AUDIO-OUT] 🎵 Processing packet: size=%u bytes, 📦REMAINING=[%u], 🔧TASKS=%d",
-             (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
+    // ESP_LOGI(TAG, "[AUDIO-OUT] 🎵 Processing packet: size=%u bytes, 📦REMAINING=[%u], 🔧TASKS=%d",
+    //          (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
     auto decode_start_time = std::chrono::steady_clock::now();
-    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
-             (unsigned)remaining_queue_size);
+    // ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
+    //          (unsigned)remaining_queue_size);
 
     // 使用专用音频解码线程池，避免BackgroundTask阻塞
     ScheduleAudioDecode([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
