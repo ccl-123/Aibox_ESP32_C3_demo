@@ -11,6 +11,7 @@
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "audio_debugger.h"
+#include "uart/serial_tx_service.h"
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "afe_audio_processor.h"
@@ -101,10 +102,20 @@ Application::~Application() {
     // 停止专用音频解码线程
     StopAudioDecodeThreads();
 
+    if (serial_timer_handle_ != nullptr) {
+        esp_timer_stop(serial_timer_handle_);
+        esp_timer_delete(serial_timer_handle_);
+        serial_timer_handle_ = nullptr;
+    }
+
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
+        clock_timer_handle_ = nullptr;
     }
+
+    serial_tx_.reset();
+
     if (background_task_ != nullptr) {
         delete background_task_;
     }
@@ -504,6 +515,30 @@ void Application::Start() {
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
 
+    // 初始化串口服务（默认：UART1, GPIO12, 9600 8N1）
+    serial_tx_ = std::make_unique<SerialTxService>();
+    if (!serial_tx_->Init()) {
+        ESP_LOGE(TAG, "SerialTxService init failed");
+    } else {
+        // 创建5秒周期的串口测试定时器
+        esp_timer_create_args_t serial_timer_args = {
+            .callback = [](void* arg) {
+                static_cast<Application*>(arg)->OnSerialTimer();
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "serial_timer",
+            .skip_unhandled_events = true,
+        };
+        esp_err_t terr = esp_timer_create(&serial_timer_args, &serial_timer_handle_);
+        if (terr == ESP_OK) {
+            esp_timer_start_periodic(serial_timer_handle_, 5000000); // 5s
+            ESP_LOGI(TAG, "Serial timer started (5s)");
+        } else {
+            ESP_LOGE(TAG, "Create serial timer failed: %s", esp_err_to_name(terr));
+        }
+    }
+
     /* Wait for the network to be ready */
     board.StartNetwork();
 
@@ -837,6 +872,17 @@ void Application::OnClockTimer() {
 
     auto display = Board::GetInstance().GetDisplay();
     display->UpdateStatusBar();
+}
+
+void Application::OnSerialTimer() {
+    // 每5秒发送一次 0xA1
+    const uint8_t value = 0xA1;
+    if (serial_tx_) {
+        bool ok = serial_tx_->SendByte(value);
+        ESP_LOGI(TAG, "[UART] TX 0x%02X %s", value, ok ? "OK" : "FAIL");
+    } else {
+        ESP_LOGW(TAG, "[UART] SerialTxService not initialized");
+    }
 
     // Print the debug info every 10 seconds
     if (clock_ticks_ % 10 == 0) {

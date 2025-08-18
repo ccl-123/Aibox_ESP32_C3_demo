@@ -24,6 +24,9 @@
 #include "wake_word.h"
 #include "audio_debugger.h"
 
+// 前向声明，降低耦合
+class SerialTxService;
+
 #define SCHEDULE_EVENT (1 << 0)
 #define SEND_AUDIO_EVENT (1 << 1)
 #define CHECK_NEW_VERSION_DONE_EVENT (1 << 2)
@@ -107,6 +110,10 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
 
+    // 串口发送服务
+    std::unique_ptr<SerialTxService> serial_tx_;
+    esp_timer_handle_t serial_timer_handle_ = nullptr; // 5秒周期发送测试数据
+
     // Audio encode / decode
     TaskHandle_t audio_loop_task_handle_ = nullptr;
     BackgroundTask* background_task_ = nullptr;
@@ -159,6 +166,9 @@ private:
     void AudioDecodeWorker(int worker_id);
     void ScheduleAudioDecode(std::function<void()> task);
     void StopAudioDecodeThreads();
+
+    // 串口测试：定时发送
+    void OnSerialTimer();
 };
 
 #endif // _APPLICATION_H_
