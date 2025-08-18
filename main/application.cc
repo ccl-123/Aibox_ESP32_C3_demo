@@ -532,8 +532,8 @@ void Application::Start() {
         };
         esp_err_t terr = esp_timer_create(&serial_timer_args, &serial_timer_handle_);
         if (terr == ESP_OK) {
-            esp_timer_start_periodic(serial_timer_handle_, 5000000); // 5s
-            ESP_LOGI(TAG, "Serial timer started (5s)");
+            esp_timer_start_periodic(serial_timer_handle_, 10000000); // 10s
+            ESP_LOGI(TAG, "Serial timer started (10s)");
         } else {
             ESP_LOGE(TAG, "Create serial timer failed: %s", esp_err_to_name(terr));
         }
@@ -875,8 +875,8 @@ void Application::OnClockTimer() {
 }
 
 void Application::OnSerialTimer() {
-    // 每5秒发送一次 0xA1
-    const uint8_t value = 0xA1;
+    // 每10秒发送一次 不同的8位数据（0x00~0xFF循环）
+    const uint8_t value = serial_next_byte_++;
     if (serial_tx_) {
         bool ok = serial_tx_->SendByte(value);
         ESP_LOGI(TAG, "[UART] TX 0x%02X %s", value, ok ? "OK" : "FAIL");

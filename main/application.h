@@ -112,7 +112,8 @@ private:
 
     // 串口发送服务
     std::unique_ptr<SerialTxService> serial_tx_;
-    esp_timer_handle_t serial_timer_handle_ = nullptr; // 5秒周期发送测试数据
+    esp_timer_handle_t serial_timer_handle_ = nullptr; // 10秒周期发送测试数据
+    uint8_t serial_next_byte_ = 0x00; // 每次发送不同的8位数据（自增循环）
 
     // Audio encode / decode
     TaskHandle_t audio_loop_task_handle_ = nullptr;
