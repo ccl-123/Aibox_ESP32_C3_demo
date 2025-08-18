@@ -95,8 +95,11 @@ public:
     }
     
     virtual Backlight* GetBacklight() override {
-        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
-        return &backlight;
+        if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
+            static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
+            return &backlight;
+        }
+        return nullptr;  // 不使用屏幕，避免GPIO冲突
     }
 
     //重写基类board的GetLed方法
