@@ -54,7 +54,10 @@ static const char* const STATE_STRINGS[] = {
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
-    background_task_ = new BackgroundTask(4096 * 7);
+    // 创建2个高优先级BackgroundTask线程，专门处理音频解码等实时任务
+    // 优先级6：高于默认任务(1-2)，但低于关键系统任务(7+)
+    // OPUS编码需要大量栈空间，增加到32KB确保不会栈溢出
+    background_task_ = new BackgroundTask(4096 * 7, 2, 6);
 
     ////初始化OTA相关参数
     ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
@@ -598,7 +601,7 @@ void Application::Start() {
         // 检查是否应该接收音频数据
         if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
             audio_decode_queue_.emplace_back(std::move(raw_data));
-            ESP_LOGI(TAG, "[AUDIO-RX] ✅ Added packet to queue, 📦NEW_SIZE=[%u/%d]",
+            ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
                      (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
         } else {
             // 详细记录丢包原因
@@ -980,8 +983,8 @@ void Application::OnAudioOutput() {
     //          (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
     auto decode_start_time = std::chrono::steady_clock::now();
-    // ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
-    //          (unsigned)remaining_queue_size);
+    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
+             (unsigned)remaining_queue_size);
 
     background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
         auto decode_task_start = std::chrono::steady_clock::now();
