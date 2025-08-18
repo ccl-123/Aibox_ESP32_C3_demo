@@ -56,9 +56,6 @@ Application::Application() {
     event_group_ = xEventGroupCreate();
     background_task_ = new BackgroundTask(4096 * 7);
 
-    // 初始化专用音频解码线程
-    InitializeAudioDecodeThreads();
-
     ////初始化OTA相关参数
     ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
     ota_.SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
@@ -99,9 +96,6 @@ Application::Application() {
 }
 
 Application::~Application() {
-    // 停止专用音频解码线程
-    StopAudioDecodeThreads();
-
     if (serial_timer_handle_ != nullptr) {
         esp_timer_stop(serial_timer_handle_);
         esp_timer_delete(serial_timer_handle_);
@@ -326,14 +320,6 @@ void Application::PlaySound(const std::string_view& sound) {
         std::unique_lock<std::mutex> lock(mutex_);
         audio_decode_cv_.wait(lock, [this]() {
             return audio_decode_queue_.empty();
-        });
-    }
-
-    // 等待专用音频解码线程完成当前任务
-    {
-        std::unique_lock<std::mutex> lock(audio_decode_task_mutex_);
-        audio_decode_task_cv_.wait(lock, [this]() {
-            return audio_decode_task_queue_.empty();
         });
     }
 
@@ -955,7 +941,6 @@ void Application::AudioLoop() {
         if (codec->output_enabled()) {
             OnAudioOutput();
         }
-        //vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -998,8 +983,7 @@ void Application::OnAudioOutput() {
     // ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
     //          (unsigned)remaining_queue_size);
 
-    // 使用专用音频解码线程池，避免BackgroundTask阻塞
-    ScheduleAudioDecode([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
+    background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
         auto decode_task_start = std::chrono::steady_clock::now();
         auto schedule_delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(decode_task_start - decode_start_time).count();
 
@@ -1382,67 +1366,4 @@ void Application::SetAecMode(AecMode mode) {
             protocol_->CloseAudioChannel();
         }
     });
-}
-
-// 专用音频解码线程池实现
-void Application::InitializeAudioDecodeThreads() {
-    ESP_LOGI(TAG, "🔧 Initializing %d audio decode threads", AUDIO_DECODE_THREAD_COUNT);
-
-    for (int i = 0; i < AUDIO_DECODE_THREAD_COUNT; i++) {
-        xTaskCreate([](void* arg) {
-            auto* params = static_cast<std::pair<Application*, int>*>(arg);
-            Application* app = params->first;
-            int worker_id = params->second;
-            app->AudioDecodeWorker(worker_id);
-            delete params;
-            vTaskDelete(NULL);
-        }, ("audio_decode_" + std::to_string(i)).c_str(), 4096 * 4,  // ESP32-C3内存优化：16KB栈
-           new std::pair<Application*, int>(this, i), 5, &audio_decode_task_handles_[i]);
-    }
-}
-
-void Application::AudioDecodeWorker(int worker_id) {
-    ESP_LOGI(TAG, "🔧 Audio decode worker %d started, priority=%d", worker_id, uxTaskPriorityGet(NULL));
-
-    while (!audio_decode_stop_.load()) {
-        std::unique_lock<std::mutex> lock(audio_decode_task_mutex_);
-        audio_decode_task_cv_.wait(lock, [this]() {
-            return !audio_decode_task_queue_.empty() || audio_decode_stop_.load();
-        });
-
-        if (audio_decode_stop_.load()) {
-            break;
-        }
-
-        if (audio_decode_task_queue_.empty()) {
-            continue;
-        }
-
-        auto task = std::move(audio_decode_task_queue_.front());
-        audio_decode_task_queue_.pop_front();
-        lock.unlock();
-
-        // 执行音频解码任务
-        task();
-    }
-
-    ESP_LOGI(TAG, "🔧 Audio decode worker %d stopped", worker_id);
-}
-
-void Application::ScheduleAudioDecode(std::function<void()> task) {
-    std::lock_guard<std::mutex> lock(audio_decode_task_mutex_);
-    audio_decode_task_queue_.emplace_back(std::move(task));
-    audio_decode_task_cv_.notify_one();
-}
-
-void Application::StopAudioDecodeThreads() {
-    audio_decode_stop_.store(true);
-    audio_decode_task_cv_.notify_all();
-
-    for (int i = 0; i < AUDIO_DECODE_THREAD_COUNT; i++) {
-        if (audio_decode_task_handles_[i] != nullptr) {
-            vTaskDelete(audio_decode_task_handles_[i]);
-            audio_decode_task_handles_[i] = nullptr;
-        }
-    }
 }
