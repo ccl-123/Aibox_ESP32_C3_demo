@@ -52,7 +52,7 @@ enum DeviceState {
 };
 
 #define OPUS_FRAME_DURATION_MS 60
-#define MAX_AUDIO_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)  // 缓冲区解码音频
+#define MAX_AUDIO_PACKETS_IN_QUEUE 500  // 缓冲区解码音频
 #define AUDIO_TESTING_MAX_DURATION_MS 10000
 
 class Application {
