@@ -955,10 +955,7 @@ void Application::AudioLoop() {
         if (codec->output_enabled()) {
             OnAudioOutput();
         }
-
-        // 改进：添加适当的延迟，避免CPU占用过高，同时保证及时响应
-        // 音频帧时长60ms，这里用10ms间隔可以保证及时处理
-        vTaskDelay(pdMS_TO_TICKS(10));
+        //vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
