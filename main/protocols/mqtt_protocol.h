@@ -98,6 +98,11 @@ private:
     // 新增：服务端VAD检测相关
     std::string vad_detection_topic_;
 
+    // VAD END消息防抖处理
+    std::chrono::steady_clock::time_point last_vad_end_time_;
+    std::mutex vad_debounce_mutex_;
+    static constexpr int VAD_END_DEBOUNCE_MS = 500;  // 500ms防抖间隔
+
     std::mutex channel_mutex_;
     Mqtt* mqtt_ = nullptr;
     Udp* udp_ = nullptr;
