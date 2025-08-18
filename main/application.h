@@ -121,13 +121,7 @@ private:
     std::atomic<int> active_decode_tasks_{0};  // 当前活跃的解码任务数
     static constexpr int MAX_CONCURRENT_DECODE_TASKS = 5;  // 最大并发解码任务数
 
-    // 新增：专用音频解码线程池
-    static constexpr int AUDIO_DECODE_THREAD_COUNT = 1;  // ESP32-C3内存有限，1个专用解码线程
-    TaskHandle_t audio_decode_task_handles_[AUDIO_DECODE_THREAD_COUNT];
-    std::mutex audio_decode_task_mutex_;
-    std::list<std::function<void()>> audio_decode_task_queue_;
-    std::condition_variable audio_decode_task_cv_;
-    std::atomic<bool> audio_decode_stop_{false};
+
 
     // 新增：用于维护音频包的timestamp队列
     std::list<uint32_t> timestamp_queue_;
@@ -154,11 +148,7 @@ private:
     void EnterAudioTestingMode();
     void ExitAudioTestingMode();
 
-    // 新增：专用音频解码线程方法
-    void InitializeAudioDecodeThreads();
-    void AudioDecodeWorker(int worker_id);
-    void ScheduleAudioDecode(std::function<void()> task);
-    void StopAudioDecodeThreads();
+
 };
 
 #endif // _APPLICATION_H_
