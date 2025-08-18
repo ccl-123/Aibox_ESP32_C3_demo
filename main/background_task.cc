@@ -5,16 +5,33 @@
 
 #define TAG "BackgroundTask"
 
-BackgroundTask::BackgroundTask(uint32_t stack_size) {
-    xTaskCreate([](void* arg) {
-        BackgroundTask* task = (BackgroundTask*)arg;
-        task->BackgroundTaskLoop();
-    }, "background_task", stack_size, this, 2, &background_task_handle_);
+BackgroundTask::BackgroundTask(uint32_t stack_size, int thread_count, int priority)
+    : thread_count_(thread_count) {
+    background_task_handles_.resize(thread_count_);
+
+    ESP_LOGI(TAG, "🔧 Creating %d BackgroundTask threads with priority %d", thread_count_, priority);
+
+    for (int i = 0; i < thread_count_; i++) {
+        xTaskCreate([](void* arg) {
+            auto* params = static_cast<std::pair<BackgroundTask*, int>*>(arg);
+            BackgroundTask* task = params->first;
+            int worker_id = params->second;
+            task->BackgroundTaskLoop(worker_id);
+            delete params;
+            vTaskDelete(NULL);
+        }, ("bg_task_" + std::to_string(i)).c_str(), stack_size,
+           new std::pair<BackgroundTask*, int>(this, i), priority, &background_task_handles_[i]);
+    }
 }
 
 BackgroundTask::~BackgroundTask() {
-    if (background_task_handle_ != nullptr) {
-        vTaskDelete(background_task_handle_);
+    stop_flag_.store(true);
+    condition_variable_.notify_all();
+
+    for (auto handle : background_task_handles_) {
+        if (handle != nullptr) {
+            vTaskDelete(handle);
+        }
     }
 }
 
@@ -47,17 +64,31 @@ void BackgroundTask::WaitForCompletion() {
     });
 }
 
-void BackgroundTask::BackgroundTaskLoop() {
-    ESP_LOGI(TAG, "background_task started");
-    while (true) {
+void BackgroundTask::BackgroundTaskLoop(int worker_id) {
+    ESP_LOGI(TAG, "🔧 BackgroundTask worker %d started, priority=%d", worker_id, uxTaskPriorityGet(NULL));
+
+    while (!stop_flag_.load()) {
         std::unique_lock<std::mutex> lock(mutex_);
-        condition_variable_.wait(lock, [this]() { return !background_tasks_.empty(); });
-        
-        std::list<std::function<void()>> tasks = std::move(background_tasks_);
+        condition_variable_.wait(lock, [this]() {
+            return !background_tasks_.empty() || stop_flag_.load();
+        });
+
+        if (stop_flag_.load()) {
+            break;
+        }
+
+        if (background_tasks_.empty()) {
+            continue;
+        }
+
+        // 每个工作线程取一个任务执行
+        auto task = std::move(background_tasks_.front());
+        background_tasks_.pop_front();
         lock.unlock();
 
-        for (auto& task : tasks) {
-            task();
-        }
+        // 执行任务
+        task();
     }
+
+    ESP_LOGI(TAG, "🔧 BackgroundTask worker %d stopped", worker_id);
 }

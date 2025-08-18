@@ -53,7 +53,10 @@ static const char* const STATE_STRINGS[] = {
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
-    background_task_ = new BackgroundTask(4096 * 7);
+    // 创建2个高优先级BackgroundTask线程，专门处理音频解码等实时任务
+    // 优先级6：高于默认任务(1-2)，但低于关键系统任务(7+)
+    // 栈大小28KB，足够处理OPUS编码等复杂任务
+    background_task_ = new BackgroundTask(4096 * 7, 2, 6);
 
     ////初始化OTA相关参数
     ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
@@ -930,8 +933,8 @@ void Application::OnAudioOutput() {
     lock.unlock();
     audio_decode_cv_.notify_all();
 
-    ESP_LOGI(TAG, "[AUDIO-OUT] 🎵 Processing packet: size=%u bytes, 📦REMAINING=[%u], 🔧TASKS=%d",
-             (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
+    // ESP_LOGI(TAG, "[AUDIO-OUT] 🎵 Processing packet: size=%u bytes, 📦REMAINING=[%u], 🔧TASKS=%d",
+    //          (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
     auto decode_start_time = std::chrono::steady_clock::now();
     ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
