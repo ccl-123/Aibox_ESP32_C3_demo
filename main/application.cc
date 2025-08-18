@@ -559,14 +559,14 @@ void Application::Start() {
         std::lock_guard<std::mutex> lock(mutex_);
 
         // 详细日志：每个包都记录，便于分析服务端发送间隔
-        ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
-                 ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
-                 (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
+        // ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
+        //          ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
+        //          (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
 
         // 检查是否应该接收音频数据
         if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
             audio_decode_queue_.emplace_back(std::move(raw_data));
-            ESP_LOGI(TAG, "[AUDIO-RX] ✅ Added packet to queue, 📦NEW_SIZE=[%u/%d]",
+            ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
                      (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
         } else {
             // 详细记录丢包原因

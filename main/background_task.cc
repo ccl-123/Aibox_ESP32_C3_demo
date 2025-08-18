@@ -36,22 +36,32 @@ BackgroundTask::~BackgroundTask() {
 }
 
 void BackgroundTask::Schedule(std::function<void()> callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+
+    // 🔴 流控机制：当任务堆积过多时，阻塞等待直到队列有空间
+    if (active_tasks_ >= 70) {
+        ESP_LOGW(TAG, "⏳ BackgroundTask queue FULL (%u tasks), waiting for space...", active_tasks_.load());
+        condition_variable_.wait(lock, [this]() {
+            return active_tasks_ < 70;
+        });
+        ESP_LOGI(TAG, "✅ BackgroundTask queue has space, resuming task creation");
+    }
+
     if (active_tasks_ >= 30) {
         int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         if (free_sram < 10000) {
             ESP_LOGW(TAG, "active_tasks_ == %u, free_sram == %u", active_tasks_.load(), free_sram);
         }
     }
+
     active_tasks_++;
     background_tasks_.emplace_back([this, cb = std::move(callback)]() {
         cb();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             active_tasks_--;
-            if (background_tasks_.empty() && active_tasks_ == 0) {
-                condition_variable_.notify_all();
-            }
+            // 🔴 任务完成时通知等待的线程
+            condition_variable_.notify_all();
         }
     });
     condition_variable_.notify_all();
