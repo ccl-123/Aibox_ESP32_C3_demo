@@ -52,7 +52,7 @@ enum DeviceState {
 };
 
 #define OPUS_FRAME_DURATION_MS 60
-#define MAX_AUDIO_PACKETS_IN_QUEUE 500  // 缓冲区解码音频
+#define MAX_AUDIO_PACKETS_IN_QUEUE 200  // 缓冲区解码音频
 #define AUDIO_TESTING_MAX_DURATION_MS 10000
 
 class Application {
@@ -127,7 +127,7 @@ private:
 
     // 改进：并发解码控制，允许多个包同时处理
     std::atomic<int> active_decode_tasks_{0};  // 当前活跃的解码任务数
-    static constexpr int MAX_CONCURRENT_DECODE_TASKS = 5;  // 最大并发解码任务数
+    static constexpr int MAX_CONCURRENT_DECODE_TASKS = 2;  // 最大并发解码任务数
 
 
     // 新增：用于维护音频包的timestamp队列
