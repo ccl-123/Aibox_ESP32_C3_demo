@@ -136,8 +136,10 @@ void Application::CheckNewVersion() {
           SetDeviceState(kDeviceStateUpgrading);
 
           // 显示升级状态
-          display->SetIcon(FONT_AWESOME_DOWNLOAD);
-          display->SetStatus(("新版本 " + ota_.GetFirmwareVersion()).c_str());
+          if (display != nullptr) {
+            display->SetIcon(FONT_AWESOME_DOWNLOAD);
+            display->SetStatus(("新版本 " + ota_.GetFirmwareVersion()).c_str());
+          }
 
           auto codec = board.GetAudioCodec();
           codec->EnableOutput(true);
@@ -185,7 +187,9 @@ void Application::CheckNewVersion() {
             // 更新显示状态，避免频繁更新
             static int last_displayed_progress = -1;
             if (progress != last_displayed_progress && (progress % 5 == 0 || progress >= 95)) {
-              display->SetStatus(buffer);
+              if (display != nullptr) {
+                display->SetStatus(buffer);
+              }
               last_displayed_progress = progress;
             }
 
@@ -288,9 +292,11 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
 void Application::Alert(const char* status, const char* message, const char* emotion, const std::string_view& sound) {
     ESP_LOGW(TAG, "Alert %s: %s [%s]", status, message, emotion);
     auto display = Board::GetInstance().GetDisplay();
-    display->SetStatus(status);
-    display->SetEmotion(emotion);
-    display->SetChatMessage("system", message);
+    if (display != nullptr) {
+        display->SetStatus(status);
+        display->SetEmotion(emotion);
+        display->SetChatMessage("system", message);
+    }
     if (!sound.empty()) {
         ResetDecoder();
         PlaySound(sound);
@@ -300,9 +306,11 @@ void Application::Alert(const char* status, const char* message, const char* emo
 void Application::DismissAlert() {
     if (device_state_ == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
-        display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
-        display->SetChatMessage("system", "");
+        if (display != nullptr) {
+            display->SetStatus(Lang::Strings::STANDBY);
+            display->SetEmotion("neutral");
+            display->SetChatMessage("system", "");
+        }
     }
 }
 
@@ -566,8 +574,8 @@ void Application::Start() {
         // 检查是否应该接收音频数据
         if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
             audio_decode_queue_.emplace_back(std::move(raw_data));
-            ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
-                     (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+            // ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
+            //          (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
         } else {
             // 详细记录丢包原因
             const char* drop_reason = "unknown";
@@ -575,9 +583,9 @@ void Application::Start() {
             else if (device_state_ != kDeviceStateSpeaking) drop_reason = "wrong_state";
             else if (audio_decode_queue_.size() >= MAX_AUDIO_PACKETS_IN_QUEUE) drop_reason = "queue_full";
 
-            ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROPPED packet - reason:%s, aborted:%d state:%d 📦QUEUE=[%u/%d] 🔧TASKS=%d",
-                     drop_reason, aborted_ ? 1 : 0, device_state_, (unsigned)audio_decode_queue_.size(),
-                     MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
+            // ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROPPED packet - reason:%s, aborted:%d state:%d 📦QUEUE=[%u/%d] 🔧TASKS=%d",
+            //          drop_reason, aborted_ ? 1 : 0, device_state_, (unsigned)audio_decode_queue_.size(),
+            //          MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
         }
     });
 
@@ -602,7 +610,9 @@ void Application::Start() {
         board.SetPowerSaveMode(true);
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
-            display->SetChatMessage("system", "");
+            if (display != nullptr) {
+                display->SetChatMessage("system", "");
+            }
             SetDeviceState(kDeviceStateIdle);
         });
     });
@@ -636,7 +646,9 @@ void Application::Start() {
                 if (cJSON_IsString(text)) {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
                     Schedule([this, display, message = std::string(text->valuestring)]() {
-                        display->SetChatMessage("assistant", message.c_str());
+                        if (display != nullptr) {
+                            display->SetChatMessage("assistant", message.c_str());
+                        }
                     });
                 }
             }
@@ -645,14 +657,18 @@ void Application::Start() {
             if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 Schedule([this, display, message = std::string(text->valuestring)]() {
-                    display->SetChatMessage("user", message.c_str());
+                    if (display != nullptr) {
+                        display->SetChatMessage("user", message.c_str());
+                    }
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
             if (cJSON_IsString(emotion)) {
                 Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
-                    display->SetEmotion(emotion_str.c_str());
+                    if (display != nullptr) {
+                        display->SetEmotion(emotion_str.c_str());
+                    }
                 });
             }
 #if CONFIG_IOT_PROTOCOL_MCP
@@ -807,8 +823,10 @@ void Application::Start() {
     has_server_time_ = ota_.HasServerTime();
     if (protocol_started) {
         std::string message = std::string(Lang::Strings::VERSION) + ota_.GetCurrentVersion();
-        display->ShowNotification(message.c_str());
-        display->SetChatMessage("system", "");
+        if (display != nullptr) {
+            display->ShowNotification(message.c_str());
+            display->SetChatMessage("system", "");
+        }
         // Play the success sound to indicate the device is ready
         ResetDecoder();
         PlaySound(Lang::Sounds::P3_SUCCESS);
@@ -816,7 +834,7 @@ void Application::Start() {
 
     // Print heap stats
     SystemInfo::PrintHeapStats();
-    
+
     // Enter the main event loop
     MainEventLoop();
 }
@@ -825,7 +843,9 @@ void Application::OnClockTimer() {
     clock_ticks_++;
 
     auto display = Board::GetInstance().GetDisplay();
-    display->UpdateStatusBar();
+    if (display != nullptr) {
+        display->UpdateStatusBar();
+    }
 
     // Print the debug info every 10 seconds
     if (clock_ticks_ % 10 == 0) {
@@ -937,8 +957,8 @@ void Application::OnAudioOutput() {
     //          (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
     auto decode_start_time = std::chrono::steady_clock::now();
-    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
-             (unsigned)remaining_queue_size);
+    // ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
+    //          (unsigned)remaining_queue_size);
 
     background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
         auto decode_task_start = std::chrono::steady_clock::now();
@@ -984,8 +1004,8 @@ void Application::OnAudioOutput() {
 
         // 任务完成，减少计数器
         int remaining_tasks = active_decode_tasks_.fetch_sub(1) - 1;
-        ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, output=%dms, total=%dms, pcm_samples=%u, 🔧REMAINING_TASKS=[%d]",
-                 (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)output_ms, (int)total_ms, (unsigned)pcm.size(), remaining_tasks);
+        // ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, output=%dms, total=%dms, pcm_samples=%u, 🔧REMAINING_TASKS=[%d]",
+        //          (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)output_ms, (int)total_ms, (unsigned)pcm.size(), remaining_tasks);
 
 #ifdef CONFIG_USE_SERVER_AEC
         // 原始数据没有时间戳，使用当前时间
@@ -1150,25 +1170,31 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateIdle:
         ESP_LOGW(TAG, "=====================  Idle  ======================");
             //led->SetColor(255, 255, 0); // 黄灯
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->SetEmotion("neutral");
+            if (display != nullptr) {
+                display->SetStatus(Lang::Strings::STANDBY);
+                display->SetEmotion("neutral");
+            }
             audio_processor_->Stop();
             ESP_LOGW(TAG, "==------ audio_processor_->Stop  -----====");
             wake_word_->StartDetection();
             ESP_LOGW(TAG, "====----- wake_word_->StartDetection -----=====");
-            
+
             break;
         case kDeviceStateConnecting:
-            display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
-            display->SetChatMessage("system", "");
+            if (display != nullptr) {
+                display->SetStatus(Lang::Strings::CONNECTING);
+                display->SetEmotion("neutral");
+                display->SetChatMessage("system", "");
+            }
             timestamp_queue_.clear();
             break;
         case kDeviceStateListening:
         ESP_LOGW(TAG, "=====================  Listening  ======================");
             //led->SetColor(255, 0, 0); // 红灯
-            display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
+            if (display != nullptr) {
+                display->SetStatus(Lang::Strings::LISTENING);
+                display->SetEmotion("neutral");
+            }
             
             // Update the IoT states before sending the start listening command
 #if CONFIG_IOT_PROTOCOL_XIAOZHI
@@ -1193,7 +1219,9 @@ void Application::SetDeviceState(DeviceState state) {
         case kDeviceStateSpeaking:
         ESP_LOGW(TAG, "=====================  Speaking  ======================");
             //led->SetColor(0, 255, 0); // 绿灯
-            display->SetStatus(Lang::Strings::SPEAKING);
+            if (display != nullptr) {
+                display->SetStatus(Lang::Strings::SPEAKING);
+            }
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_processor_->Stop();
@@ -1306,15 +1334,21 @@ void Application::SetAecMode(AecMode mode) {
         switch (aec_mode_) {
         case kAecOff:
             audio_processor_->EnableDeviceAec(false);
-            display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
+            if (display != nullptr) {
+                display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
+            }
             break;
         case kAecOnServerSide:
             audio_processor_->EnableDeviceAec(false);
-            display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+            if (display != nullptr) {
+                display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+            }
             break;
         case kAecOnDeviceSide:
             audio_processor_->EnableDeviceAec(true);
-            display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+            if (display != nullptr) {
+                display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+            }
             break;
         }
 
