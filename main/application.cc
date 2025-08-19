@@ -905,8 +905,8 @@ void Application::OnAudioOutput() {
     // 修复：检查并发解码任务数，但允许一定的队列积压处理
     int current_tasks = active_decode_tasks_.load();
     if (current_tasks >= MAX_CONCURRENT_DECODE_TASKS) {
-        ESP_LOGW(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping - QUEUE_SIZE=%u",
-                 current_tasks, MAX_CONCURRENT_DECODE_TASKS, (unsigned)audio_decode_queue_.size());
+        // ESP_LOGW(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping - QUEUE_SIZE=%u",
+        //          current_tasks, MAX_CONCURRENT_DECODE_TASKS, (unsigned)audio_decode_queue_.size());
         return;
     }
 
@@ -1112,7 +1112,7 @@ bool Application::ReadAudio(std::vector<int16_t>& data, int sample_rate, int sam
 }
 
 void Application::AbortSpeaking(AbortReason reason) {
-    ESP_LOGI(TAG, "Abort speaking");
+    ESP_LOGW(TAG, "=========================Abort speaking=========================");
     aborted_ = true;
     protocol_->SendAbortSpeaking(reason);
     // Immediately stop playback and clear queues; switch state out of speaking

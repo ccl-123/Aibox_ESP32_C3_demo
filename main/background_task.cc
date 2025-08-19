@@ -39,10 +39,10 @@ void BackgroundTask::Schedule(std::function<void()> callback) {
     std::unique_lock<std::mutex> lock(mutex_);
 
     // 🔴 流控机制：当任务堆积过多时，阻塞等待直到队列有空间
-    if (active_tasks_ >= 70) {
+    if (active_tasks_ >= 80) {
         ESP_LOGW(TAG, "⏳ BackgroundTask queue FULL (%u tasks), waiting for space...", active_tasks_.load());
         condition_variable_.wait(lock, [this]() {
-            return active_tasks_ < 70;
+            return active_tasks_ < 80;
         });
         ESP_LOGI(TAG, "✅ BackgroundTask queue has space, resuming task creation");
     }
