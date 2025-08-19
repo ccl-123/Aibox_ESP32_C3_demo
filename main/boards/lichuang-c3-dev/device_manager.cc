@@ -38,12 +38,22 @@ DeviceManager::DeviceManager(Aw9523* aw9523) : aw9523_(aw9523) {
         return;
     }
     
+    // 创建放气定时器 (单次触发，5秒)
+    loose_timer_ = xTimerCreate("loose_timer", pdMS_TO_TICKS(MOTOR_LOOSE_DURATION_MS), pdFALSE, this, LooseTimerCallback);
+    if (loose_timer_ == NULL) {
+        ESP_LOGE(TAG, "放气定时器创建失败！");
+        return;
+    }
+    
     ESP_LOGI(TAG, "设备管理器初始化完成✓");
 }
 
 DeviceManager::~DeviceManager() {
     if (pwm_timer_) {
         xTimerDelete(pwm_timer_, 0);
+    }
+    if (loose_timer_) {
+        xTimerDelete(loose_timer_, 0);
     }
     delete settings_;
 }
@@ -60,6 +70,10 @@ void DeviceManager::SetMotorLevel(MotorType motor, uint8_t level) {
             suck_level_ = level;
             ESP_LOGI(TAG, "夹吸档位设置为: %d", level);
             break;
+        case MOTOR_LOOSE:
+            // 放气功能固定占空比，不支持档位调节
+            ESP_LOGW(TAG, "放气功能不支持档位调节，固定使用 %d%% 占空比", MOTOR_LOOSE_DEFAULT_DUTY);
+            return; // 不保存设置
         case HEATER:
             heater_level_ = level;
             ESP_LOGI(TAG, "加热档位设置为: %d", level);
@@ -72,6 +86,7 @@ uint8_t DeviceManager::GetMotorLevel(MotorType motor) {
     switch (motor) {
         case MOTOR_ROCK: return rock_level_;
         case MOTOR_SUCK: return suck_level_;
+        case MOTOR_LOOSE: return 1; // 放气固定返回1（不使用档位）
         case HEATER: return heater_level_;
         default: return 1;
     }
@@ -124,6 +139,11 @@ void DeviceManager::StopMotor(MotorType motor) {
             aw9523_->digital_write(1, 1, false);
             ESP_LOGI(TAG, "停止夹吸");
             break;
+        case MOTOR_LOOSE:
+            loose_running_ = false;
+            aw9523_->digital_write(1, 2, false);
+            ESP_LOGI(TAG, "停止放气");
+            break;
         case HEATER:
             heater_running_ = false;
             aw9523_->digital_write(1, 3, false);
@@ -135,6 +155,7 @@ void DeviceManager::StopMotor(MotorType motor) {
 void DeviceManager::StopAllMotors() {
     StopMotor(MOTOR_ROCK);
     StopMotor(MOTOR_SUCK);
+    StopMotor(MOTOR_LOOSE);
     StopMotor(HEATER);
 }
 
@@ -216,6 +237,13 @@ void DeviceManager::UpdatePwmOutput() {
         aw9523_->digital_write(1, 1, output);
     }
     
+    // 放气 PWM (固定50%占空比)
+    if (loose_running_) {
+        uint32_t duty = MOTOR_LOOSE_DEFAULT_DUTY; // 固定50%占空比
+        bool output = (pwm_counter_ * 100 / PWM_PERIOD) < duty;
+        aw9523_->digital_write(1, 2, output);
+    }
+    
     // 加热 PWM (每档2%)
     if (heater_running_) {
         uint32_t duty = heater_level_ * 2; // 2%, 4%, 6%... 16%
@@ -245,9 +273,10 @@ void DeviceManager::HandleButtonEvent(ButtonId button, ButtonEvent event) {
                 ESP_LOGI(TAG, "*******************夹吸按键双击 - 切换加热档位******************");
                 ToggleMotor(HEATER);
             } else if (event == ButtonEvent::LONG_PRESS) {
-                ESP_LOGI(TAG, "*******************夹吸按键长按2秒 - 关闭夹吸和加热功能*************");
-                StopMotor(MOTOR_SUCK);
-                StopMotor(HEATER);
+                ESP_LOGI(TAG, "*******************夹吸按键长按2秒 - 关闭夹吸和加热，开启放气5秒*************");
+                StopMotor(MOTOR_SUCK);   // 关闭夹吸
+                StopMotor(HEATER);       // 关闭加热
+                StartLooseMotor();       // 开启放气5秒
             }
             break;
             
@@ -281,4 +310,45 @@ void DeviceManager::Shutdown() {
     
     // 重启系统（ESP32的关机就是重启到深度睡眠）
     esp_restart();
+}
+
+void DeviceManager::StartLooseMotor() {
+    ESP_LOGI(TAG, "🌬️ 开始放气 - PWM占空比: %d%%, 持续时间: %d秒", 
+             MOTOR_LOOSE_DEFAULT_DUTY, MOTOR_LOOSE_DURATION_MS / 1000);
+    
+    // 如果放气已经在运行，先停止之前的定时器
+    if (loose_running_) {
+        ESP_LOGI(TAG, "停止上一次放气操作");
+        xTimerStop(loose_timer_, 0);
+        StopLooseMotor();
+    }
+    
+    // 启动放气电机
+    loose_running_ = true;
+    
+    // 启动5秒定时器
+    if (xTimerStart(loose_timer_, 0) != pdPASS) {
+        ESP_LOGE(TAG, "放气定时器启动失败！");
+        StopLooseMotor(); // 如果定时器启动失败，立即停止
+        return;
+    }
+    
+    ESP_LOGI(TAG, "放气电机已启动，将在 %d 秒后自动停止", MOTOR_LOOSE_DURATION_MS / 1000);
+}
+
+void DeviceManager::StopLooseMotor() {
+    if (loose_running_) {
+        ESP_LOGI(TAG, "🌬️ 停止放气");
+        loose_running_ = false;
+        aw9523_->digital_write(1, 2, false); // 立即关闭P1_2
+        
+        // 停止定时器（如果还在运行）
+        xTimerStop(loose_timer_, 0);
+    }
+}
+
+void DeviceManager::LooseTimerCallback(TimerHandle_t timer) {
+    auto* self = static_cast<DeviceManager*>(pvTimerGetTimerID(timer));
+    ESP_LOGI(TAG, "🌬️ 放气定时器到期 - 5秒放气完成");
+    self->StopLooseMotor();
 }

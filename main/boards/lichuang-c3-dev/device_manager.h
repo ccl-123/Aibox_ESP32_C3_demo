@@ -8,11 +8,16 @@
 #include "settings.h"
 #include "button_state_machine.h"
 
+// 放气功能相关配置
+#define MOTOR_LOOSE_DEFAULT_DUTY   50    // 放气默认PWM占空比(%)
+#define MOTOR_LOOSE_DURATION_MS    5000  // 放气持续时间(毫秒)
+
 class DeviceManager {
 public:
     enum MotorType {
         MOTOR_ROCK = 0,    // P1_0 震动
-        MOTOR_SUCK = 1,    // P1_1 夹吸 
+        MOTOR_SUCK = 1,    // P1_1 夹吸
+        MOTOR_LOOSE = 2,   // P1_2 放气
         HEATER = 3         // P1_3 加热
     };
 
