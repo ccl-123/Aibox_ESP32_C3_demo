@@ -1,6 +1,8 @@
 #include "i2c_device.h"
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "I2cDevice"
 
@@ -9,8 +11,8 @@ I2cDevice::I2cDevice(i2c_master_bus_handle_t i2c_bus, uint8_t addr) {
     i2c_device_config_t i2c_device_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = addr,
-        .scl_speed_hz = 400 * 1000,
-        .scl_wait_us = 0,
+        .scl_speed_hz = 400 * 1000,  // 🔧 降低到100kHz提高稳定性
+        .scl_wait_us = 0,           // 🔧 增加等待时间
         .flags = {
             .disable_ack_check = 0,
         },
