@@ -21,17 +21,17 @@ uint32_t ButtonStateMachine::GetTimeMs() {
 
 void ButtonStateMachine::ProcessButtonStates(uint8_t button_states) {
     // 添加初始化保护：设备启动后5秒内不处理按键事件，避免误触发
-    static uint32_t init_time = GetTimeMs();
-    uint32_t current_time = GetTimeMs();
-    if (current_time - init_time < 1300) {
-        // 初始化期间，只更新状态，不处理事件
-        static bool init_warning_shown = false;
-        if (!init_warning_shown) {
-            ESP_LOGI(TAG, "按键系统初始化保护期：1.3秒内忽略按键事件");
-            init_warning_shown = true;
-        }
-        return;
-    }
+    // static uint32_t init_time = GetTimeMs();
+    // uint32_t current_time = GetTimeMs();
+    // if (current_time - init_time < 1300) {
+    //     // 初始化期间，只更新状态，不处理事件
+    //     static bool init_warning_shown = false;
+    //     if (!init_warning_shown) {
+    //         ESP_LOGI(TAG, "按键系统初始化保护期：1.3秒内忽略按键事件");
+    //         init_warning_shown = true;
+    //     }
+    //     return;
+    // }
     
     // 处理4个按键的状态变化
     // 根据用户最终确认：按键按下时被拉高，未按下时为低电平

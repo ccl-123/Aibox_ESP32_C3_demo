@@ -3,6 +3,7 @@
 #include "board.h"
 #include <esp_log.h>
 #include <esp_system.h>
+#include <inttypes.h>
 
 #define TAG "DeviceManager"
 
@@ -38,10 +39,24 @@ DeviceManager::DeviceManager(Aw9523* aw9523) : aw9523_(aw9523) {
         return;
     }
     
-    // 创建放气定时器 (单次触发，5秒)
+    // 创建夹吸定时器 (单次触发，动态时间)
+    suck_timer_ = xTimerCreate("suck_timer", pdMS_TO_TICKS(MOTOR_SUCK_LEVEL1_TIME_MS), pdFALSE, this, SuckTimerCallback);
+    if (suck_timer_ == NULL) {
+        ESP_LOGE(TAG, "夹吸定时器创建失败！");
+        return;
+    }
+    
+    // 创建放气定时器 (单次触发，1.5秒)
     loose_timer_ = xTimerCreate("loose_timer", pdMS_TO_TICKS(MOTOR_LOOSE_DURATION_MS), pdFALSE, this, LooseTimerCallback);
     if (loose_timer_ == NULL) {
         ESP_LOGE(TAG, "放气定时器创建失败！");
+        return;
+    }
+    
+    // 创建加热定时器 (单次触发，10分钟)
+    heater_timer_ = xTimerCreate("heater_timer", pdMS_TO_TICKS(HEATER_DURATION_MS), pdFALSE, this, HeaterTimerCallback);
+    if (heater_timer_ == NULL) {
+        ESP_LOGE(TAG, "加热定时器创建失败！");
         return;
     }
     
@@ -52,14 +67,20 @@ DeviceManager::~DeviceManager() {
     if (pwm_timer_) {
         xTimerDelete(pwm_timer_, 0);
     }
+    if (suck_timer_) {
+        xTimerDelete(suck_timer_, 0);
+    }
     if (loose_timer_) {
         xTimerDelete(loose_timer_, 0);
+    }
+    if (heater_timer_) {
+        xTimerDelete(heater_timer_, 0);
     }
     delete settings_;
 }
 
 void DeviceManager::SetMotorLevel(MotorType motor, uint8_t level) {
-    if (level < 1 || level > 8) return;
+    if (level < 1 || level > 3) return;  // 修改为3档
     
     switch (motor) {
         case MOTOR_ROCK:
@@ -72,7 +93,7 @@ void DeviceManager::SetMotorLevel(MotorType motor, uint8_t level) {
             break;
         case MOTOR_LOOSE:
             // 放气功能固定占空比，不支持档位调节
-            ESP_LOGW(TAG, "放气功能不支持档位调节，固定使用 %d%% 占空比", MOTOR_LOOSE_DEFAULT_DUTY);
+            ESP_LOGW(TAG, "放气功能不支持档位调节，固定使用 %d%% 占空比", MOTOR_LOOSE_PWM_DUTY);
             return; // 不保存设置
         case HEATER:
             heater_level_ = level;
@@ -116,7 +137,7 @@ void DeviceManager::ToggleMotor(MotorType motor) {
     if (*running_state) {
         // 如果已开启，切换到下一档位
         current_level++;
-        if (current_level > 8) {
+        if (current_level > 3) {  // 修改为3档
             current_level = 1;
         }
         SetMotorLevel(motor, current_level);
@@ -229,25 +250,29 @@ void DeviceManager::UpdatePwmOutput() {
         aw9523_->digital_write(1, 0, output);
     }
     
-    // 夹吸 PWM (每档4%)
+    // 夹吸 PWM (固定80%占空比)
     if (suck_running_) {
-        uint32_t duty = suck_level_ * 4; // 4%, 8%, 12%... 32%
-        if (duty > 100) duty = 100;
+        uint32_t duty = MOTOR_SUCK_PWM_DUTY; // 固定80%占空比
         bool output = (pwm_counter_ * 100 / PWM_PERIOD) < duty;
         aw9523_->digital_write(1, 1, output);
     }
     
-    // 放气 PWM (固定50%占空比)
+    // 放气 PWM (固定80%占空比)
     if (loose_running_) {
-        uint32_t duty = MOTOR_LOOSE_DEFAULT_DUTY; // 固定50%占空比
+        uint32_t duty = MOTOR_LOOSE_PWM_DUTY; // 固定80%占空比
         bool output = (pwm_counter_ * 100 / PWM_PERIOD) < duty;
         aw9523_->digital_write(1, 2, output);
     }
     
-    // 加热 PWM (每档2%)
+    // 加热 PWM (按档位：70%/85%/100%)
     if (heater_running_) {
-        uint32_t duty = heater_level_ * 2; // 2%, 4%, 6%... 16%
-        if (duty > 100) duty = 100;
+        uint32_t duty;
+        switch (heater_level_) {
+            case 1: duty = HEATER_LEVEL1_DUTY; break; // 70%
+            case 2: duty = HEATER_LEVEL2_DUTY; break; // 85%
+            case 3: duty = HEATER_LEVEL3_DUTY; break; // 100%
+            default: duty = HEATER_LEVEL1_DUTY; break;
+        }
         bool output = (pwm_counter_ * 100 / PWM_PERIOD) < duty;
         aw9523_->digital_write(1, 3, output);
     }
@@ -268,15 +293,41 @@ void DeviceManager::HandleButtonEvent(ButtonId button, ButtonEvent event) {
         case ButtonId::BUTTON_SUCK:  // P0_0 夹吸加热按键
             if (event == ButtonEvent::CLICK) {
                 ESP_LOGI(TAG, "******************夹吸按键单击 - 切换夹吸档位******************");
-                ToggleMotor(MOTOR_SUCK);
+                // 新逻辑：启动夹吸循环序列
+                if (suck_sequence_running_) {
+                    // 如果正在运行循环序列，切换到下一档位
+                    suck_level_++;
+                    if (suck_level_ > 3) {
+                        suck_level_ = 1;
+                    }
+                    ESP_LOGI(TAG, "夹吸档位切换为: %d", suck_level_);
+                    SaveSettings();
+                } else {
+                    suck_level_ = GetMotorLevel(MOTOR_SUCK); // 获取上次档位
+                    ESP_LOGI(TAG, "启动夹吸档位: %d", suck_level_);
+                }
+                StartSuckSequence(suck_level_);
             } else if (event == ButtonEvent::DOUBLE_CLICK) {
                 ESP_LOGI(TAG, "*******************夹吸按键双击 - 切换加热档位******************");
-                ToggleMotor(HEATER);
+                // 新逻辑：启动加热序列（10分钟自动停止）
+                if (heater_running_) {
+                    // 如果正在运行，切换到下一档位
+                    heater_level_++;
+                    if (heater_level_ > 3) {
+                        heater_level_ = 1;
+                    }
+                    ESP_LOGI(TAG, "加热档位切换为: %d", heater_level_);
+                    SaveSettings();
+                } else {
+                    heater_level_ = GetMotorLevel(HEATER); // 获取上次档位
+                    ESP_LOGI(TAG, "启动加热档位: %d", heater_level_);
+                }
+                StartHeaterSequence(heater_level_);
             } else if (event == ButtonEvent::LONG_PRESS) {
-                ESP_LOGI(TAG, "*******************夹吸按键长按2秒 - 关闭夹吸和加热，开启放气5秒*************");
-                StopMotor(MOTOR_SUCK);   // 关闭夹吸
-                StopMotor(HEATER);       // 关闭加热
-                StartLooseMotor();       // 开启放气5秒
+                ESP_LOGI(TAG, "*******************夹吸按键长按2秒 - 关闭所有功能*************");
+                StopSuckSequence();   // 停止夹吸序列
+                StopHeaterSequence(); // 停止加热序列
+                StopLooseMotor();     // 停止放气
             }
             break;
             
@@ -299,8 +350,11 @@ void DeviceManager::HandleButtonEvent(ButtonId button, ButtonEvent event) {
 void DeviceManager::Shutdown() {
     ESP_LOGI(TAG, "正在关闭设备...");
     
-    // 停止所有电机
-    StopAllMotors();
+    // 停止所有序列和电机
+    StopSuckSequence();   // 停止夹吸序列
+    StopHeaterSequence(); // 停止加热序列
+    StopLooseMotor();     // 停止放气
+    StopAllMotors();      // 停止其他电机
     
     // 保存设置
     SaveSettings();
@@ -313,8 +367,8 @@ void DeviceManager::Shutdown() {
 }
 
 void DeviceManager::StartLooseMotor() {
-    ESP_LOGI(TAG, "🌬️ 开始放气 - PWM占空比: %d%%, 持续时间: %d秒", 
-             MOTOR_LOOSE_DEFAULT_DUTY, MOTOR_LOOSE_DURATION_MS / 1000);
+    ESP_LOGI(TAG, "🌬️ 开始放气 - PWM占空比: %d%%, 持续时间: %.1f秒", 
+             MOTOR_LOOSE_PWM_DUTY, MOTOR_LOOSE_DURATION_MS / 1000.0f);
     
     // 如果放气已经在运行，先停止之前的定时器
     if (loose_running_) {
@@ -333,7 +387,7 @@ void DeviceManager::StartLooseMotor() {
         return;
     }
     
-    ESP_LOGI(TAG, "放气电机已启动，将在 %d 秒后自动停止", MOTOR_LOOSE_DURATION_MS / 1000);
+    ESP_LOGI(TAG, "放气电机已启动，将在 %.1f 秒后自动停止", MOTOR_LOOSE_DURATION_MS / 1000.0f);
 }
 
 void DeviceManager::StopLooseMotor() {
@@ -349,6 +403,150 @@ void DeviceManager::StopLooseMotor() {
 
 void DeviceManager::LooseTimerCallback(TimerHandle_t timer) {
     auto* self = static_cast<DeviceManager*>(pvTimerGetTimerID(timer));
-    ESP_LOGI(TAG, "🌬️ 放气定时器到期 - 5秒放气完成");
+    ESP_LOGI(TAG, "🌬️ 放气定时器到期 - 1.5秒放气完成");
+    
+    // 停止放气
     self->StopLooseMotor();
+    
+    // 检查夹吸序列是否还在运行，如果是则重新启动夹吸（形成循环）
+    if (self->suck_sequence_running_) {
+        ESP_LOGI(TAG, "🔄 放气完成，重新启动夹吸循环 - 档位: %d", self->current_suck_level_);
+        
+        // 根据当前档位确定夹吸时间
+        uint32_t suck_time_ms;
+        switch (self->current_suck_level_) {
+            case 1: suck_time_ms = MOTOR_SUCK_LEVEL1_TIME_MS; break; // 3秒
+            case 2: suck_time_ms = MOTOR_SUCK_LEVEL2_TIME_MS; break; // 3.5秒
+            case 3: suck_time_ms = MOTOR_SUCK_LEVEL3_TIME_MS; break; // 4秒
+            default: suck_time_ms = MOTOR_SUCK_LEVEL1_TIME_MS; break;
+        }
+        
+        // 启动夹吸电机
+        self->suck_running_ = true;
+        
+        // 重新配置并启动夹吸定时器
+        xTimerChangePeriod(self->suck_timer_, pdMS_TO_TICKS(suck_time_ms), 0);
+        if (xTimerStart(self->suck_timer_, 0) != pdPASS) {
+            ESP_LOGE(TAG, "夹吸循环重启失败！停止序列");
+            self->StopSuckSequence();
+            return;
+        }
+        
+        ESP_LOGI(TAG, "夹吸循环重启成功，将在 %.1f 秒后切换到放气", suck_time_ms / 1000.0f);
+    } else {
+        ESP_LOGI(TAG, "🔄 夹吸序列已停止，不再循环");
+    }
+}
+
+void DeviceManager::StartSuckSequence(uint8_t level) {
+    ESP_LOGI(TAG, "🔧 开始夹吸循环序列 - 档位: %d", level);
+    
+    // 停止之前的序列
+    StopSuckSequence();
+    
+    // 设置序列状态
+    suck_sequence_running_ = true;
+    current_suck_level_ = level;
+    
+    // 根据档位确定时间
+    uint32_t suck_time_ms;
+    switch (level) {
+        case 1: suck_time_ms = MOTOR_SUCK_LEVEL1_TIME_MS; break; // 3秒
+        case 2: suck_time_ms = MOTOR_SUCK_LEVEL2_TIME_MS; break; // 3.5秒
+        case 3: suck_time_ms = MOTOR_SUCK_LEVEL3_TIME_MS; break; // 4秒
+        default: suck_time_ms = MOTOR_SUCK_LEVEL1_TIME_MS; break;
+    }
+    
+    ESP_LOGI(TAG, "夹吸档位 %d: 80%% PWM 持续 %.1f秒，然后放气 1.5秒，循环执行", 
+             level, suck_time_ms / 1000.0f);
+    
+    // 启动夹吸电机
+    suck_running_ = true;
+    
+    // 重新配置并启动定时器
+    xTimerChangePeriod(suck_timer_, pdMS_TO_TICKS(suck_time_ms), 0);
+    if (xTimerStart(suck_timer_, 0) != pdPASS) {
+        ESP_LOGE(TAG, "夹吸定时器启动失败！");
+        StopSuckSequence();
+        return;
+    }
+    
+    ESP_LOGI(TAG, "夹吸循环已启动，将在 %.1f 秒后自动切换到放气", suck_time_ms / 1000.0f);
+}
+
+void DeviceManager::StopSuckSequence() {
+    if (suck_sequence_running_ || suck_running_) {
+        ESP_LOGI(TAG, "🔧 停止夹吸循环序列");
+        
+        // 停止序列状态
+        suck_sequence_running_ = false;
+        suck_running_ = false;
+        
+        // 立即关闭夹吸电机
+        aw9523_->digital_write(1, 1, false);
+        
+        // 停止夹吸定时器
+        xTimerStop(suck_timer_, 0);
+        
+        ESP_LOGI(TAG, "夹吸循环序列已完全停止");
+    }
+}
+
+void DeviceManager::SuckTimerCallback(TimerHandle_t timer) {
+    auto* self = static_cast<DeviceManager*>(pvTimerGetTimerID(timer));
+    ESP_LOGI(TAG, "🔧 夹吸定时器到期 - 开始切换到放气");
+    
+    // 停止夹吸
+    self->suck_running_ = false;
+    self->aw9523_->digital_write(1, 1, false);
+    
+    // 立即启动放气
+    self->StartLooseMotor();
+}
+
+void DeviceManager::StartHeaterSequence(uint8_t level) {
+    ESP_LOGI(TAG, "🔥 开始加热序列 - 档位: %d", level);
+    
+    // 停止之前的序列
+    StopHeaterSequence();
+    
+    // 根据档位确定占空比
+    uint32_t duty;
+    switch (level) {
+        case 1: duty = HEATER_LEVEL1_DUTY; break; // 70%
+        case 2: duty = HEATER_LEVEL2_DUTY; break; // 85%
+        case 3: duty = HEATER_LEVEL3_DUTY; break; // 100%
+        default: duty = HEATER_LEVEL1_DUTY; break;
+    }
+    
+    ESP_LOGI(TAG, "加热档位 %d: %" PRIu32 "%% PWM 持续 10分钟", level, duty);
+    
+    // 启动加热
+    heater_running_ = true;
+    
+    // 启动10分钟定时器
+    if (xTimerStart(heater_timer_, 0) != pdPASS) {
+        ESP_LOGE(TAG, "加热定时器启动失败！");
+        StopHeaterSequence();
+        return;
+    }
+    
+    ESP_LOGI(TAG, "加热已启动，将在 10 分钟后自动停止");
+}
+
+void DeviceManager::StopHeaterSequence() {
+    if (heater_running_) {
+        ESP_LOGI(TAG, "🔥 停止加热序列");
+        heater_running_ = false;
+        aw9523_->digital_write(1, 3, false); // 立即关闭P1_3
+        
+        // 停止定时器
+        xTimerStop(heater_timer_, 0);
+    }
+}
+
+void DeviceManager::HeaterTimerCallback(TimerHandle_t timer) {
+    auto* self = static_cast<DeviceManager*>(pvTimerGetTimerID(timer));
+    ESP_LOGI(TAG, "🔥 加热定时器到期 - 10分钟加热完成");
+    self->StopHeaterSequence();
 }

@@ -8,15 +8,27 @@
 #include "settings.h"
 #include "button_state_machine.h"
 
-// 放气功能相关配置
-#define MOTOR_LOOSE_DEFAULT_DUTY   50    // 放气默认PWM占空比(%)
-#define MOTOR_LOOSE_DURATION_MS    5000  // 放气持续时间(毫秒)
+// 夹吸和放气功能相关配置
+#define MOTOR_SUCK_PWM_DUTY        80    // 夹吸PWM占空比(%)
+#define MOTOR_LOOSE_PWM_DUTY       80    // 放气PWM占空比(%)
+#define MOTOR_LOOSE_DURATION_MS    1500  // 放气持续时间(1.5秒)
+
+// 夹吸档位时间配置(毫秒)
+#define MOTOR_SUCK_LEVEL1_TIME_MS  3000  // 一档：3秒
+#define MOTOR_SUCK_LEVEL2_TIME_MS  3500  // 二档：3.5秒  
+#define MOTOR_SUCK_LEVEL3_TIME_MS  4000  // 三档：4秒
+
+// 加热档位配置
+#define HEATER_LEVEL1_DUTY         70    // 一档：70% PWM
+#define HEATER_LEVEL2_DUTY         85    // 二档：85% PWM
+#define HEATER_LEVEL3_DUTY         100   // 三档：100% PWM
+#define HEATER_DURATION_MS         600000 // 加热持续时间(10分钟)
 
 class DeviceManager {
 public:
     enum MotorType {
         MOTOR_ROCK = 0,    // P1_0 震动
-        MOTOR_SUCK = 1,    // P1_1 夹吸
+        MOTOR_SUCK = 1,    // P1_1 夹吸 
         MOTOR_LOOSE = 2,   // P1_2 放气
         HEATER = 3         // P1_3 加热
     };
@@ -59,6 +71,7 @@ private:
     // 运行状态
     bool rock_running_ = false;
     bool suck_running_ = false;
+    bool loose_running_ = false;  // 放气运行状态
     bool heater_running_ = false;
     
     // PWM 相关
@@ -66,9 +79,31 @@ private:
     static void PwmTimerCallback(TimerHandle_t timer);
     void UpdatePwmOutput();
     
+    // 夹吸定时器相关
+    TimerHandle_t suck_timer_;
+    static void SuckTimerCallback(TimerHandle_t timer);
+    void StartSuckSequence(uint8_t level);  // 开始夹吸序列(循环执行)
+    void StopSuckSequence();                // 停止夹吸序列
+    
+    // 序列状态控制
+    bool suck_sequence_running_ = false;    // 夹吸序列是否正在运行
+    uint8_t current_suck_level_ = 1;        // 当前夹吸序列档位
+    
+    // 放气定时器相关  
+    TimerHandle_t loose_timer_;
+    static void LooseTimerCallback(TimerHandle_t timer);
+    void StartLooseMotor();        // 开启放气
+    void StopLooseMotor();         // 停止放气
+    
+    // 加热定时器相关
+    TimerHandle_t heater_timer_;
+    static void HeaterTimerCallback(TimerHandle_t timer);
+    void StartHeaterSequence(uint8_t level); // 开始加热序列(10分钟自动停止)
+    void StopHeaterSequence();               // 停止加热序列
+    
     // PWM 状态
     uint32_t pwm_counter_ = 0;
-    static const uint32_t PWM_PERIOD = 100; // PWM周期 100*10ms = 1秒
+    static const uint32_t PWM_PERIOD = 30; // PWM周期 100*10ms = 1秒
 };
 
 #endif
