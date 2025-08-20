@@ -119,10 +119,13 @@ private:
     std::list<AudioStreamPacket> audio_testing_queue_;
 
     // 新增：播放队列（PCM），用于解码/输出解耦
-    static constexpr int MAX_PLAYBACK_TASKS_IN_QUEUE = 50;
+    static constexpr int MAX_PLAYBACK_TASKS_IN_QUEUE = 3;   // 队列上限=3
+    static constexpr int PLAYBACK_HIGH_WATERMARK = 2;       // 到2停止解码
+    static constexpr int PLAYBACK_LOW_WATERMARK  = 1;       // 回落到1恢复解码
     std::deque<std::vector<int16_t>> audio_playback_queue_;
     std::mutex playback_mutex_;
     std::condition_variable playback_cv_;
+    std::atomic<bool> playback_backpressure_{false};         // 播放队列背压开关
 
     // 改进：并发解码控制，允许多个包同时处理
     std::atomic<int> active_decode_tasks_{0};  // 当前活跃的解码任务数

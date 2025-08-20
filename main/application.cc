@@ -54,9 +54,9 @@ static const char* const STATE_STRINGS[] = {
 Application::Application() {
     event_group_ = xEventGroupCreate();
     // 创建n个高优先级BackgroundTask线程，专门处理音频解码等实时任务(第二个参数)
-    // 优先级6：高于默认任务(1-2)，但低于关键系统任务(7+)
-    // 栈大小28KB，足够处理OPUS编码等复杂任务
-    background_task_ = new BackgroundTask(4096 * 7, 2, 6);
+    // 优先级5：项目初始默认任务优先级2；可适当提升
+    // 栈大小：解码最小需要4KB*7;音频播放和解码已经完成解耦，使用独立任务播放队列。
+    background_task_ = new BackgroundTask(4096 * 7, 1, 5);
 
     ////初始化OTA相关参数
     ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
@@ -498,11 +498,16 @@ void Application::Start() {
             app->playback_cv_.wait(lock, [app]() { return !app->audio_playback_queue_.empty(); });
             auto pcm = std::move(app->audio_playback_queue_.front());
             app->audio_playback_queue_.pop_front();
+            bool now_empty = app->audio_playback_queue_.empty();
             lock.unlock();
             auto t0 = std::chrono::steady_clock::now();
             codec->OutputData(pcm);
             auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
             ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+            if (now_empty) {
+                // 通知 STOP 等待者：队列可能已清空
+                app->playback_cv_.notify_all();
+            }
         }
         vTaskDelete(NULL);
     }, "audio_playback", 4096, this, 6, nullptr, 1);
@@ -515,11 +520,15 @@ void Application::Start() {
             app->playback_cv_.wait(lock, [app]() { return !app->audio_playback_queue_.empty(); });
             auto pcm = std::move(app->audio_playback_queue_.front());
             app->audio_playback_queue_.pop_front();
+            bool now_empty = app->audio_playback_queue_.empty();
             lock.unlock();
             auto t0 = std::chrono::steady_clock::now();
             codec->OutputData(pcm);
             auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
             ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+            if (now_empty) {
+                app->playback_cv_.notify_all();
+            }
         }
         vTaskDelete(NULL);
     }, "audio_playback", 4096, this, 6, nullptr);
@@ -658,7 +667,16 @@ void Application::Start() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 ESP_LOGW(TAG, "--------------------GET STOP----------------------");
                 Schedule([this]() {
+                    // 等待解码任务完成
                     background_task_->WaitForCompletion();
+
+                    // 等待播放队列清空：让已解码的PCM播放完毕，避免音频突然截断
+                    ESP_LOGI(TAG, "[AUDIO-STOP] Waiting for playback queue to drain (no timeout)...");
+                    std::unique_lock<std::mutex> plock(playback_mutex_);
+                    playback_cv_.wait(plock, [this]() { return audio_playback_queue_.empty(); });
+                    plock.unlock();
+                    ESP_LOGI(TAG, "[AUDIO-STOP] Playback queue drained, final size: %u", (unsigned)audio_playback_queue_.size());
+
                     // Always honor stop even if speaking flag was not set due to ordering
                     aborted_ = false; // clear abort flag to allow next round
                     if (listening_mode_ == kListeningModeManualStop) {
@@ -939,10 +957,36 @@ void Application::AudioLoop() {
 
 void Application::OnAudioOutput() {
     // 修复：检查并发解码任务数，但允许一定的队列积压处理
+    // 解码并发限制 & 播放队列背压：当播放队列达到高水位时，暂停新的解码调度
     int current_tasks = active_decode_tasks_.load();
+    bool prev_bp = playback_backpressure_.load();
+    unsigned play_q_size = 0;
+    {
+        std::lock_guard<std::mutex> plock(playback_mutex_);
+        play_q_size = (unsigned)audio_playback_queue_.size();
+        bool new_bp = prev_bp;
+        if ((int)play_q_size >= PLAYBACK_HIGH_WATERMARK) new_bp = true;
+        else if ((int)play_q_size <= PLAYBACK_LOW_WATERMARK) new_bp = false;
+        if (new_bp != prev_bp) {
+            playback_backpressure_.store(new_bp);
+            if (new_bp) {
+                ESP_LOGW(TAG, "[BACKPRESSURE] 🔴 ENTER backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
+                         play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                         PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
+            } else {
+                ESP_LOGI(TAG, "[BACKPRESSURE] 🟢 EXIT backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
+                         play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                         PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
+            }
+        } else {
+            playback_backpressure_.store(new_bp);
+        }
+    }
+    if (playback_backpressure_.load()) {
+        // 背压生效：不再调度新的解码任务，让 OPUS 帧先积压在解码队列（内存小）
+        return;
+    }
     if (current_tasks >= MAX_CONCURRENT_DECODE_TASKS) {
-        // ESP_LOGW(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping - QUEUE_SIZE=%u",
-        //          current_tasks, MAX_CONCURRENT_DECODE_TASKS, (unsigned)audio_decode_queue_.size());
         return;
     }
 
@@ -1015,13 +1059,15 @@ void Application::OnAudioOutput() {
         // 重要：只有解码成功且PCM非空时才入队
         if (!pcm.empty()) {
             std::lock_guard<std::mutex> plock(playback_mutex_);
+            // 只做硬上限保护，不丢帧：当超过硬上限时，不入队（回退由背压控制），避免OOM
             if ((int)audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
-                // 播放队列超高水位：丢弃最旧的PCM，保留最新，避免无限堆积
-                audio_playback_queue_.pop_front();
-                ESP_LOGW(TAG, "[AUDIO-PLAYBACK] ⚠️ playback queue full, drop oldest. size=%u", (unsigned)audio_playback_queue_.size());
+                ESP_LOGW(TAG, "[AUDIO-PLAYBACK] ⏸️ playback queue at hard limit (%u/%u), skip enqueue; backpressure=%d",
+                         (unsigned)audio_playback_queue_.size(), (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                         (int)playback_backpressure_.load());
+            } else {
+                audio_playback_queue_.emplace_back(std::move(pcm));
+                playback_cv_.notify_one();
             }
-            audio_playback_queue_.emplace_back(std::move(pcm));
-            playback_cv_.notify_one();
         } else {
             ESP_LOGE(TAG, "[AUDIO-OUT] ❌ Decoded PCM is empty, skipping playback queue");
         }
