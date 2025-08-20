@@ -1208,6 +1208,8 @@ void Application::AbortSpeaking(AbortReason reason) {
     aborted_ = true;
     protocol_->SendAbortSpeaking(reason);
     // Immediately stop playback and clear queues; switch state out of speaking
+    auto mqtt = static_cast<MqttProtocol*>(protocol_.get());
+    mqtt->SendCancelTTS(!aborted_); // 发送取消TTS（文本转语音）的请求（finish/stop）
     ResetDecoder();
     if (listening_mode_ == kListeningModeManualStop) {
         SetDeviceState(kDeviceStateIdle);
