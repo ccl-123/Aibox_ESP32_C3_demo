@@ -11,7 +11,7 @@
 
 class BackgroundTask {
 public:
-    BackgroundTask(uint32_t stack_size = 4096 * 2, int thread_count = 3, int priority = 5);
+    BackgroundTask(uint32_t stack_size = 4096 * 2, int thread_count = 2, int priority = 6);
     ~BackgroundTask();
 
     void Schedule(std::function<void()> callback);
