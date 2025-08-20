@@ -9,8 +9,8 @@
 #include "button_state_machine.h"
 
 // 夹吸和放气功能相关配置
-#define MOTOR_SUCK_PWM_DUTY        80    // 夹吸PWM占空比(%)
-#define MOTOR_LOOSE_PWM_DUTY       80    // 放气PWM占空比(%)
+#define MOTOR_SUCK_PWM_DUTY        100    // 夹吸PWM占空比(%)
+#define MOTOR_LOOSE_PWM_DUTY       100    // 放气PWM占空比(%)
 #define MOTOR_LOOSE_DURATION_MS    1500  // 放气持续时间(1.5秒)
 
 // 夹吸档位时间配置(毫秒)
