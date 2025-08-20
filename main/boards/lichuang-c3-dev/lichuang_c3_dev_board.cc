@@ -1,5 +1,6 @@
 #include "wifi_board.h"
 #include "audio_codecs/es8311_audio_codec.h"
+#include "display/lcd_display.h"
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -8,9 +9,9 @@
 #include "iot/thing_manager.h"
 #include "button_state_machine.h"
 #include "device_manager.h"
-#include "display/display.h"  // 使用 NoDisplay
 
 #include <esp_log.h>
+#include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <driver/gpio.h>
@@ -22,11 +23,14 @@
 
 #define TAG "LichuangC3DevBoard"
 
+LV_FONT_DECLARE(font_puhui_16_4);
+LV_FONT_DECLARE(font_awesome_16_4);
+
 class LichuangC3DevBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t codec_i2c_bus_;
     Button boot_button_;
-    Display* display_ = nullptr; // 使用通用 Display 指针，实际为 NoDisplay
+    LcdDisplay* display_;
     SingleLed* led_;
 
     // AW9523 IO 扩展
@@ -65,7 +69,14 @@ private:
     }
 
     void InitializeSpi() {
-        // 未使用屏幕，SPI 不初始化，节省内存与 DMA 资源
+        spi_bus_config_t buscfg = {};
+        buscfg.mosi_io_num = DISPLAY_SPI_MOSI_PIN;
+        buscfg.miso_io_num = GPIO_NUM_NC;
+        buscfg.sclk_io_num = DISPLAY_SPI_SCK_PIN;
+        buscfg.quadwp_io_num = GPIO_NUM_NC;
+        buscfg.quadhd_io_num = GPIO_NUM_NC;
+        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
+        ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
     void InitializeButtons() {
@@ -79,8 +90,9 @@ private:
     }
 
     void InitializeSt7789Display() {
-        // 不使用屏幕，改为 NoDisplay，避免 LVGL 初始化
-        display_ = new NoDisplay();
+        // 无显示屏，跳过初始化
+        ESP_LOGI(TAG, "No display attached, skip ST7789 init");
+        display_ = nullptr;
     }
     
     void InitializeAw9523() {
@@ -161,7 +173,7 @@ private:
                         (p0_input>>0)&1, (p0_input>>1)&1, (p0_input>>2)&1, (p0_input>>3)&1);
             }
             
-            if (aw9523_->read_config(&p0_config, &p1_config) == ESP_OK) {
+        if (aw9523_->read_config(&p0_config, &p1_config) == ESP_OK) {
                 ESP_LOGI(TAG, "   CONFIG: P0=0x%02X P1=0x%02X", p0_config, p1_config);
             }
             
@@ -194,9 +206,9 @@ private:
                     } else {
                         ESP_LOGE(TAG, "❌ I2C读取失败: %s", esp_err_to_name(result));
                     }
-                }
-                vTaskDelay(pdMS_TO_TICKS(100));
             }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
             ESP_LOGI(TAG, "实时监控结束");
             vTaskDelete(NULL);
         }, "btn_monitor", 3072, this, 6, NULL);
@@ -247,7 +259,7 @@ private:
                         ESP_LOGI(TAG, "清除中断后: P0=0x%02X P1=0x%02X, GPIO11=%d", 
                                 clear_p0, clear_p1, gpio_get_level(AW9523_INT_GPIO));
                     }
-                } else {
+                    } else {
                     // 超时 - 正常情况
                     static int normal_count = 0;
                     normal_count++;
@@ -302,11 +314,11 @@ private:
 public:
     LichuangC3DevBoard() : boot_button_(BOOT_BUTTON_GPIO) {
         InitializeI2c();
-        // 不初始化 SPI / LCD，改为 NoDisplay
         InitializeSt7789Display();
         InitializeAw9523();
         InitializeButtons();
         InitializeIot();
+        GetBacklight()->SetBrightness(100);
         led_ = new SingleLed(WS2812_GPIO);
     }
     
@@ -350,11 +362,8 @@ public:
     }
     
     virtual Backlight* GetBacklight() override {
-        if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
-            static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
-            return &backlight;
-        }
-        return nullptr;  // 不使用屏幕，避免GPIO冲突
+        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
+        return &backlight;
     }
 
     //重写基类board的GetLed方法
@@ -362,6 +371,10 @@ public:
         return led_;
     }
 
+    // 获取设备管理器
+    virtual DeviceManager* GetDeviceManager() override {
+        return device_manager_;
+    }
 
 };
 

@@ -87,6 +87,7 @@ private:
     Application();
     ~Application();
 
+    uint8_t current_volume_ = 80;
     std::unique_ptr<WakeWord> wake_word_;
     std::unique_ptr<AudioProcessor> audio_processor_;
     std::unique_ptr<AudioDebugger> audio_debugger_;
@@ -149,6 +150,9 @@ private:
     void ExitAudioTestingMode();
 
 
+    static constexpr uint8_t kVolumeStep = 10;
+    static constexpr uint8_t kVolumeMax = 100;
+    static constexpr uint8_t kVolumeMin = 60;
 };
 
 #endif // _APPLICATION_H_

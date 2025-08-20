@@ -12,6 +12,9 @@
 #include "mcp_server.h"
 #include "audio_debugger.h"
 
+//添加千娇外设控制
+#include "boards/lichuang-c3-dev/device_manager.h"
+
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "afe_audio_processor.h"
 #else
@@ -711,7 +714,105 @@ void Application::Start() {
             } else {
                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
             }
-        } else {
+        } 
+        else if (strcmp(type->valuestring, "0") == 0 || strcmp(type->valuestring, "1") == 0 || strcmp(type->valuestring, "3") == 0 ||
+                 strcmp(type->valuestring, "4") == 0 || strcmp(type->valuestring, "5") == 0 || strcmp(type->valuestring, "6") == 0) {
+                // 这是控制消息，直接处理
+                cJSON* vlue = cJSON_GetObjectItem(root, "vlue");
+                if (!vlue || !cJSON_IsString(vlue)) {
+                    ESP_LOGW(TAG, "Missing or invalid vlue field in control message");
+                    return;
+                }
+
+                int type_val = atoi(type->valuestring);  // 将类型字符串转换为整数
+                std::string control_value = vlue->valuestring;
+
+                ESP_LOGI(TAG, "Processing control message: type=%d, value=%s", type_val,
+                        control_value.c_str());
+
+                if (type_val == 0) {  // 音量控制
+                    ESP_LOGI(TAG, "【音量控制】接收到远程控制指令, value=%s", control_value.c_str());
+                    
+                    // 获取设备管理器实例
+                    auto* device_manager = Board::GetInstance().GetDeviceManager();
+                    if (!device_manager) {
+                        ESP_LOGE(TAG, "设备管理器不可用");
+                        return;
+                    }
+                    
+                    device_manager->HandleRemoteVolumeControl(control_value);
+
+                } else if (type_val == 1) {  // 关机控制
+                    ESP_LOGI(TAG, "【关机控制】接收到远程关机指令");
+                    
+                    // 获取设备管理器实例
+                    auto* device_manager = Board::GetInstance().GetDeviceManager();
+                    if (device_manager) {
+                        device_manager->Shutdown();
+                    } else {
+                        ESP_LOGE(TAG, "设备管理器不可用，执行系统重启");
+                        esp_restart();
+                    }
+
+                }else if (type_val == 3) {  // 休眠模式控制
+                    ESP_LOGI(TAG, "【休眠控制】接收到远程休眠指令");
+                    
+                    // 获取设备管理器实例
+                    auto* device_manager = Board::GetInstance().GetDeviceManager();
+                    if (device_manager) {
+                        device_manager->EnterIdleMode();
+                    }
+
+                    if (device_state_ == kDeviceStateSpeaking) {
+                        AbortSpeaking(kAbortReasonNone);
+                    }
+
+                    SetDeviceState(kDeviceStateIdle);
+
+                }else if (type_val == 4) {  // 夹吸控制状态
+                    ESP_LOGI(TAG, "【夹吸控制】接收到远程控制指令, value=%s", control_value.c_str());
+                    
+                    // 获取设备管理器实例
+                    auto* device_manager = Board::GetInstance().GetDeviceManager();
+                    if (!device_manager) {
+                        ESP_LOGE(TAG, "设备管理器不可用");
+                        return;
+                    }
+                    
+                    int value_int = std::atoi(control_value.c_str());
+                    device_manager->HandleRemoteSuckControl(value_int);
+
+                }else if(type_val == 5){ // 震动控制
+                    ESP_LOGI(TAG, "【震动控制】接收到远程控制指令, value=%s", control_value.c_str());
+                    
+                    // 获取设备管理器实例
+                    auto* device_manager = Board::GetInstance().GetDeviceManager();
+                    if (!device_manager) {
+                        ESP_LOGE(TAG, "设备管理器不可用");
+                        return;
+                    }
+                    
+                    int value_int = std::atoi(control_value.c_str());
+                    device_manager->HandleRemoteRockControl(value_int);
+
+                }else if(type_val == 6){ // 加热控制
+                    ESP_LOGI(TAG, "【加热控制】接收到远程控制指令, value=%s", control_value.c_str());
+                    
+                    // 获取设备管理器实例
+                    auto* device_manager = Board::GetInstance().GetDeviceManager();
+                    if (!device_manager) {
+                        ESP_LOGE(TAG, "设备管理器不可用");
+                        return;
+                    }
+                    
+                    int value_int = std::atoi(control_value.c_str());
+                    device_manager->HandleRemoteHeaterControl(value_int);
+                }
+
+
+            } 
+        
+        else {
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }
     });

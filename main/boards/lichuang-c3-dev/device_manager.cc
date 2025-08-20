@@ -3,6 +3,7 @@
 #include "board.h"
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_sleep.h>
 #include <inttypes.h>
 
 #define TAG "DeviceManager"
@@ -202,7 +203,7 @@ void DeviceManager::SetVolume(uint8_t volume) {
     SaveSettings();
 }
 
-uint8_t DeviceManager::GetVolume() {
+uint8_t DeviceManager::GetVolume() const {
     return volume_level_;
 }
 
@@ -215,23 +216,41 @@ void DeviceManager::NextVolumeLevel() {
 }
 
 void DeviceManager::SaveSettings() {
+    if (!settings_) {
+        ESP_LOGE(TAG, "Settings对象为空，无法保存设置");
+        return;
+    }
+    
+    // 保存各档位设置
     settings_->SetInt("rock_level", rock_level_);
     settings_->SetInt("suck_level", suck_level_);
     settings_->SetInt("heater_level", heater_level_);
     settings_->SetInt("volume_level", volume_level_);
+    
+    ESP_LOGI(TAG, "💾 设置已保存: 震动:%d 夹吸:%d 加热:%d 音量:%d", 
+             rock_level_, suck_level_, heater_level_, volume_level_);
 }
 
 void DeviceManager::LoadSettings() {
+    if (!settings_) {
+        ESP_LOGI(TAG, "Settings对象为空，使用默认设置");
+        return;
+    }
+    
+    // 加载各档位设置（带默认值）
     rock_level_ = settings_->GetInt("rock_level", 1);
     suck_level_ = settings_->GetInt("suck_level", 1);
     heater_level_ = settings_->GetInt("heater_level", 1);
     volume_level_ = settings_->GetInt("volume_level", 80);
     
-    ESP_LOGI(TAG, "设置已加载 - 震动:%d 夹吸:%d 加热:%d 音量:%d", 
-             rock_level_, suck_level_, heater_level_, volume_level_);
+    // 确保档位在有效范围内
+    if (rock_level_ < 1 || rock_level_ > 3) rock_level_ = 1;
+    if (suck_level_ < 1 || suck_level_ > 3) suck_level_ = 1;
+    if (heater_level_ < 1 || heater_level_ > 3) heater_level_ = 1;
+    if (volume_level_ < 60 || volume_level_ > 100) volume_level_ = 80;
     
-    // 注意：音量设置延后到音频系统完全初始化后
-    ESP_LOGI(TAG, "音量设置将在音频系统初始化完成后应用");
+    ESP_LOGI(TAG, "📂 设置已加载: 震动:%d 夹吸:%d 加热:%d 音量:%d", 
+             rock_level_, suck_level_, heater_level_, volume_level_);
 }
 
 void DeviceManager::PwmTimerCallback(TimerHandle_t timer) {
@@ -348,22 +367,40 @@ void DeviceManager::HandleButtonEvent(ButtonId button, ButtonEvent event) {
 }
 
 void DeviceManager::Shutdown() {
-    ESP_LOGI(TAG, "正在关闭设备...");
+    ESP_LOGI(TAG, "🔌 正在执行关机流程...");
     
     // 停止所有序列和电机
+    ESP_LOGI(TAG, "停止所有设备功能...");
     StopSuckSequence();   // 停止夹吸序列
     StopHeaterSequence(); // 停止加热序列
     StopLooseMotor();     // 停止放气
     StopAllMotors();      // 停止其他电机
     
     // 保存设置
+    ESP_LOGI(TAG, "保存当前设置...");
     SaveSettings();
     
-    // 延迟一点时间确保操作完成
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // 延迟确保所有操作完成
+    ESP_LOGI(TAG, "等待操作完成...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
     
-    // 重启系统（ESP32的关机就是重启到深度睡眠）
-    esp_restart();
+    // 关闭外设电源（如果有电源管理）
+    ESP_LOGI(TAG, "关闭外设...");
+    
+    // 进入深度睡眠模式（真正的关机）
+    ESP_LOGI(TAG, "🌙 进入深度睡眠模式（关机）");
+    ESP_LOGI(TAG, "设备将完全关闭，需要按重启按键或重新上电来唤醒");
+    
+    // 禁用所有唤醒源，实现真正的关机
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    
+    // 可选：配置GPIO9作为唤醒源（如果需要按键唤醒）
+    // esp_sleep_enable_ext0_wakeup(GPIO_NUM_9, 0);  // 低电平唤醒
+    
+    // 进入深度睡眠（最接近真正关机的状态）
+    esp_deep_sleep_start();
+    
+    // 这里的代码不会被执行，因为设备已经进入深度睡眠
 }
 
 void DeviceManager::StartLooseMotor() {
@@ -549,4 +586,125 @@ void DeviceManager::HeaterTimerCallback(TimerHandle_t timer) {
     auto* self = static_cast<DeviceManager*>(pvTimerGetTimerID(timer));
     ESP_LOGI(TAG, "🔥 加热定时器到期 - 10分钟加热完成");
     self->StopHeaterSequence();
+}
+
+// ========================= MQTT远程控制实现 =========================
+
+void DeviceManager::HandleRemoteVolumeControl(const std::string& value) {
+    ESP_LOGI(TAG, "🌐 远程音量控制: %s", value.c_str());
+    
+    uint8_t current_volume = volume_level_;  // 使用内部状态而不是GetVolume()
+    uint8_t new_volume = current_volume;
+    
+    if (value == "+") {
+        // 增加1档 (10)
+        new_volume = current_volume + 10;
+        if (new_volume > 100) new_volume = 100;
+    } else if (value == "++") {
+        // 增加2档 (20)
+        new_volume = current_volume + 20;
+        if (new_volume > 100) new_volume = 100;
+    } else if (value == "-") {
+        // 减少1档 (10)
+        if (current_volume >= 70) {
+            new_volume = current_volume - 10;
+        } else {
+            new_volume = 60; // 确保不低于最小值
+        }
+    } else if (value == "--") {
+        // 减少2档 (20)
+        if (current_volume >= 80) {
+            new_volume = current_volume - 20;
+        } else {
+            new_volume = 60; // 确保不低于最小值
+        }
+    } else {
+        ESP_LOGW(TAG, "未知的音量控制值: %s", value.c_str());
+        return;
+    }
+    
+    ESP_LOGI(TAG, "音量调节: %d -> %d", current_volume, new_volume);
+    
+    // 更新内部状态
+    volume_level_ = new_volume;
+    
+    // 应用音量设置到硬件
+    SetVolume(new_volume);
+    
+    // 保存设置到NVS
+    SaveSettings();
+}
+
+void DeviceManager::HandleRemoteSuckControl(int value) {
+    ESP_LOGI(TAG, "🌐 远程夹吸控制: %d", value);
+    
+    if (value == 0) {
+        // 关闭夹吸功能（同时关闭加热）
+        ESP_LOGI(TAG, "关闭夹吸功能和加热功能");
+        StopSuckSequence();
+        StopHeaterSequence();  // 关闭夹吸时同时关闭加热
+    } else if (value >= 1 && value <= 3) {
+        // 启动对应档位的夹吸功能
+        ESP_LOGI(TAG, "启动夹吸功能 - 档位: %d", value);
+        suck_level_ = value;
+        SaveSettings();
+        StartSuckSequence(value);
+    } else {
+        ESP_LOGW(TAG, "无效的夹吸档位: %d", value);
+    }
+}
+
+void DeviceManager::HandleRemoteRockControl(int value) {
+    ESP_LOGI(TAG, "🌐 远程震动控制: %d", value);
+    
+    if (value == 0) {
+        // 关闭震动功能
+        ESP_LOGI(TAG, "关闭震动功能");
+        StopMotor(MOTOR_ROCK);
+        rock_running_ = false;
+        SaveSettings();
+    } else if (value >= 1 && value <= 3) {
+        // 设置档位并启动震动功能
+        ESP_LOGI(TAG, "启动震动功能 - 档位: %d", value);
+        rock_level_ = value;
+        rock_running_ = true;
+        
+        // 实际启动震动电机
+        SetMotorLevel(MOTOR_ROCK, value);
+        
+        SaveSettings();
+    } else {
+        ESP_LOGW(TAG, "无效的震动档位: %d", value);
+    }
+}
+
+void DeviceManager::HandleRemoteHeaterControl(int value) {
+    ESP_LOGI(TAG, "🌐 远程加热控制: %d", value);
+    
+    if (value == 0) {
+        // 关闭加热功能
+        ESP_LOGI(TAG, "关闭加热功能");
+        StopHeaterSequence();
+    } else if (value >= 1 && value <= 3) {
+        // 启动对应档位的加热功能
+        ESP_LOGI(TAG, "启动加热功能 - 档位: %d", value);
+        heater_level_ = value;
+        SaveSettings();
+        StartHeaterSequence(value);
+    } else {
+        ESP_LOGW(TAG, "无效的加热档位: %d", value);
+    }
+}
+
+void DeviceManager::EnterIdleMode() {
+    ESP_LOGI(TAG, "🌐 进入休眠(Idle)模式");
+    
+    // 停止所有功能
+    StopSuckSequence();
+    StopHeaterSequence();
+    StopLooseMotor();
+    StopAllMotors();
+    
+    // 可以在这里添加更多的休眠逻辑，比如降低功耗等
+    // TODO: 实现具体的休眠模式逻辑
 }

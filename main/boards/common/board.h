@@ -14,6 +14,7 @@
 void* create_board();
 class AudioCodec;
 class Display;
+class DeviceManager;
 class Board {
 private:
     Board(const Board&) = delete; // 禁用拷贝构造函数
@@ -52,6 +53,7 @@ public:
     virtual void SetPowerSaveMode(bool enabled) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+    virtual DeviceManager* GetDeviceManager() { return nullptr; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

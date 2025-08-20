@@ -45,7 +45,7 @@ public:
     
     // 音量控制 (60-100)
     void SetVolume(uint8_t volume);
-    uint8_t GetVolume();
+    uint8_t GetVolume() const;
     void NextVolumeLevel();
     
     // 设置保存和恢复
@@ -57,6 +57,13 @@ public:
     
     // 关机处理
     void Shutdown();
+    
+    // MQTT远程控制接口
+    void HandleRemoteVolumeControl(const std::string& value);     // 音量控制
+    void HandleRemoteSuckControl(int value);                      // 夹吸控制
+    void HandleRemoteRockControl(int value);                      // 震动控制  
+    void HandleRemoteHeaterControl(int value);                    // 加热控制
+    void EnterIdleMode();                                         // 进入休眠模式
     
 private:
     Aw9523* aw9523_;
@@ -103,7 +110,7 @@ private:
     
     // PWM 状态
     uint32_t pwm_counter_ = 0;
-    static const uint32_t PWM_PERIOD = 30; // PWM周期 100*10ms = 1秒
+    static const uint32_t PWM_PERIOD = 60; // PWM周期 100*10ms = 1秒
 };
 
 #endif
