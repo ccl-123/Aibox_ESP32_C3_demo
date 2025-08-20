@@ -510,7 +510,7 @@ void Application::Start() {
             }
         }
         vTaskDelete(NULL);
-    }, "audio_playback", 4096, this, 6, nullptr, 1);
+    }, "audio_playback", 8192, this, 6, nullptr, 1);
 #else
     xTaskCreate([](void* arg) {
         Application* app = (Application*)arg;
@@ -531,7 +531,7 @@ void Application::Start() {
             }
         }
         vTaskDelete(NULL);
-    }, "audio_playback", 4096, this, 6, nullptr);
+    }, "audio_playback", 8192, this, 6, nullptr);
 #endif
 
 
@@ -970,13 +970,13 @@ void Application::OnAudioOutput() {
         if (new_bp != prev_bp) {
             playback_backpressure_.store(new_bp);
             if (new_bp) {
-                ESP_LOGW(TAG, "[BACKPRESSURE] 🔴 ENTER backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
-                         play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
-                         PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
+                // ESP_LOGW(TAG, "[BACKPRESSURE] 🔴 ENTER backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
+                //          play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                //          PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
             } else {
-                ESP_LOGI(TAG, "[BACKPRESSURE] 🟢 EXIT backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
-                         play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
-                         PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
+                // ESP_LOGI(TAG, "[BACKPRESSURE] 🟢 EXIT backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
+                //          play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                //          PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
             }
         } else {
             playback_backpressure_.store(new_bp);
