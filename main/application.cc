@@ -53,7 +53,7 @@ static const char* const STATE_STRINGS[] = {
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
-    // 创建2个高优先级BackgroundTask线程，专门处理音频解码等实时任务
+    // 创建n个高优先级BackgroundTask线程，专门处理音频解码等实时任务(第二个参数)
     // 优先级6：高于默认任务(1-2)，但低于关键系统任务(7+)
     // 栈大小28KB，足够处理OPUS编码等复杂任务
     background_task_ = new BackgroundTask(4096 * 7, 2, 6);
@@ -145,8 +145,7 @@ void Application::CheckNewVersion() {
           // 播放升级音频提示
           PlaySound(Lang::Sounds::P3_UPGRADE);
           ESP_LOGI(TAG, "Starting firmware upgrade...");
-          vTaskDelay(pdMS_TO_TICKS(2500));
-
+          vTaskDelay(pdMS_TO_TICKS(2500));          
           // 预先关闭音频输入输出，避免升级过程中的音频操作干扰
           codec->EnableInput(false);  // 关闭麦克风输入
 
@@ -262,7 +261,7 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     };
     static const std::array<digit_sound, 10> digit_sounds{{
         digit_sound{'0', Lang::Sounds::P3_0},
-        digit_sound{'1', Lang::Sounds::P3_1}, 
+        digit_sound{'1', Lang::Sounds::P3_1},
         digit_sound{'2', Lang::Sounds::P3_2},
         digit_sound{'3', Lang::Sounds::P3_3},
         digit_sound{'4', Lang::Sounds::P3_4},
@@ -404,7 +403,7 @@ void Application::StartListening() {
         ESP_LOGE(TAG, "Protocol not initialized");
         return;
     }
-    
+
     if (device_state_ == kDeviceStateIdle) {
         Schedule([this]() {
             if (!protocol_->IsAudioChannelOpened()) {
@@ -489,6 +488,43 @@ void Application::Start() {
         vTaskDelete(NULL);
     }, "audio_loop", 4096 * 2, this, 8, &audio_loop_task_handle_);
 #endif
+    // 启动独立的播放任务：消费 PCM 播放队列并输出到 I2S
+#if CONFIG_USE_AUDIO_PROCESSOR
+    xTaskCreatePinnedToCore([](void* arg) {
+        Application* app = (Application*)arg;
+        auto codec = Board::GetInstance().GetAudioCodec();
+        for (;;) {
+            std::unique_lock<std::mutex> lock(app->playback_mutex_);
+            app->playback_cv_.wait(lock, [app]() { return !app->audio_playback_queue_.empty(); });
+            auto pcm = std::move(app->audio_playback_queue_.front());
+            app->audio_playback_queue_.pop_front();
+            lock.unlock();
+            auto t0 = std::chrono::steady_clock::now();
+            codec->OutputData(pcm);
+            auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+        }
+        vTaskDelete(NULL);
+    }, "audio_playback", 4096, this, 6, nullptr, 1);
+#else
+    xTaskCreate([](void* arg) {
+        Application* app = (Application*)arg;
+        auto codec = Board::GetInstance().GetAudioCodec();
+        for (;;) {
+            std::unique_lock<std::mutex> lock(app->playback_mutex_);
+            app->playback_cv_.wait(lock, [app]() { return !app->audio_playback_queue_.empty(); });
+            auto pcm = std::move(app->audio_playback_queue_.front());
+            app->audio_playback_queue_.pop_front();
+            lock.unlock();
+            auto t0 = std::chrono::steady_clock::now();
+            codec->OutputData(pcm);
+            auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+        }
+        vTaskDelete(NULL);
+    }, "audio_playback", 4096, this, 6, nullptr);
+#endif
+
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -765,7 +801,7 @@ void Application::Start() {
 
             if (device_state_ == kDeviceStateIdle) {
                 wake_word_->EncodeWakeWordData();
-                
+
                 if (!protocol_->IsAudioChannelOpened()) {
                     SetDeviceState(kDeviceStateConnecting);
                     if (!protocol_->OpenAudioChannel()) {
@@ -816,7 +852,7 @@ void Application::Start() {
 
     // Print heap stats
     SystemInfo::PrintHeapStats();
-    
+
     // Enter the main event loop
     MainEventLoop();
 }
@@ -937,8 +973,8 @@ void Application::OnAudioOutput() {
     //          (unsigned)raw_data.size(), (unsigned)remaining_queue_size, active_decode_tasks_.load());
 
     auto decode_start_time = std::chrono::steady_clock::now();
-    ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
-             (unsigned)remaining_queue_size);
+    // ESP_LOGI(TAG, "[AUDIO-OUT] 🚀 Starting decode task, 📦QUEUE=[%u]",
+    //          (unsigned)remaining_queue_size);
 
     background_task_->Schedule([this, codec, raw_data = std::move(raw_data), decode_start_time]() mutable {
         auto decode_task_start = std::chrono::steady_clock::now();
@@ -975,17 +1011,27 @@ void Application::OnAudioOutput() {
         auto resample_end = std::chrono::steady_clock::now();
         auto resample_ms = std::chrono::duration_cast<std::chrono::milliseconds>(resample_end - resample_start).count();
 
-        auto output_start = std::chrono::steady_clock::now();
-        codec->OutputData(pcm);
-        auto output_end = std::chrono::steady_clock::now();
-        auto output_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - output_start).count();
+        // 改造：将 PCM 放入播放队列，交由独立播放任务处理，避免在解码线程阻塞
+        // 重要：只有解码成功且PCM非空时才入队
+        if (!pcm.empty()) {
+            std::lock_guard<std::mutex> plock(playback_mutex_);
+            if ((int)audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
+                // 播放队列超高水位：丢弃最旧的PCM，保留最新，避免无限堆积
+                audio_playback_queue_.pop_front();
+                ESP_LOGW(TAG, "[AUDIO-PLAYBACK] ⚠️ playback queue full, drop oldest. size=%u", (unsigned)audio_playback_queue_.size());
+            }
+            audio_playback_queue_.emplace_back(std::move(pcm));
+            playback_cv_.notify_one();
+        } else {
+            ESP_LOGE(TAG, "[AUDIO-OUT] ❌ Decoded PCM is empty, skipping playback queue");
+        }
 
-        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - decode_start_time).count();
+        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - decode_start_time).count();
 
         // 任务完成，减少计数器
         int remaining_tasks = active_decode_tasks_.fetch_sub(1) - 1;
-        ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, output=%dms, total=%dms, pcm_samples=%u, 🔧REMAINING_TASKS=[%d]",
-                 (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)output_ms, (int)total_ms, (unsigned)pcm.size(), remaining_tasks);
+        ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, enq_play=%dms, pcm_samples=%u, 📦PLAY_Q=[%u], 🔧REMAINING_TASKS=[%d]",
+                 (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)total_ms, (unsigned)pcm.size(), (unsigned)audio_playback_queue_.size(), remaining_tasks);
 
 #ifdef CONFIG_USE_SERVER_AEC
         // 原始数据没有时间戳，使用当前时间
@@ -998,7 +1044,7 @@ void Application::OnAudioOutput() {
 
 void Application::OnAudioInput() {
     //ESP_LOGW(TAG, "=====================  OnAudioInput  ======================");
-    
+
     if (device_state_ == kDeviceStateAudioTesting) {
         if (audio_testing_queue_.size() >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
             ExitAudioTestingMode();
@@ -1102,12 +1148,12 @@ bool Application::ReadAudio(std::vector<int16_t>& data, int sample_rate, int sam
             return false;
         }
     }
-    
+
     // 音频调试：发送原始音频数据
     if (audio_debugger_) {
         audio_debugger_->Feed(data);
     }
-    
+
     return true;
 }
 
@@ -1156,7 +1202,7 @@ void Application::SetDeviceState(DeviceState state) {
             ESP_LOGW(TAG, "==------ audio_processor_->Stop  -----====");
             wake_word_->StartDetection();
             ESP_LOGW(TAG, "====----- wake_word_->StartDetection -----=====");
-            
+
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -1169,7 +1215,7 @@ void Application::SetDeviceState(DeviceState state) {
             //led->SetColor(255, 0, 0); // 红灯
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
-            
+
             // Update the IoT states before sending the start listening command
 #if CONFIG_IOT_PROTOCOL_XIAOZHI
             UpdateIotStates();
@@ -1261,14 +1307,14 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         ToggleChatState();
         Schedule([this, wake_word]() {
             if (protocol_) {
-                protocol_->SendWakeWordDetected(wake_word); 
+                    protocol_->SendWakeWordDetected(wake_word);
             }
-        }); 
+        });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
             AbortSpeaking(kAbortReasonNone);
         });
-    } else if (device_state_ == kDeviceStateListening) {   
+    } else if (device_state_ == kDeviceStateListening) {
         Schedule([this]() {
             if (protocol_) {
                 protocol_->CloseAudioChannel();
