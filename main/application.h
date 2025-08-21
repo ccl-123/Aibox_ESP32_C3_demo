@@ -10,6 +10,7 @@
 #include <mutex>
 #include <list>
 #include <vector>
+#include <deque>
 #include <condition_variable>
 #include <memory>
 
@@ -81,7 +82,7 @@ public:
     void SendMcpMessage(const std::string& payload);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
-    BackgroundTask* GetBackgroundTask() const { return background_task_; }
+    BackgroundTask* GetBackgroundTask() const { return background_task_.get(); }
 
 private:
     Application();
@@ -109,13 +110,22 @@ private:
 
     // Audio encode / decode
     TaskHandle_t audio_loop_task_handle_ = nullptr;
-    BackgroundTask* background_task_ = nullptr;
+    std::unique_ptr<BackgroundTask> background_task_;
     std::chrono::steady_clock::time_point last_output_time_;
     std::list<AudioStreamPacket> audio_send_queue_;
     // 优化：使用原始数据队列，避免AudioStreamPacket封装开销
     std::list<std::vector<uint8_t>> audio_decode_queue_;
     std::condition_variable audio_decode_cv_;
     std::list<AudioStreamPacket> audio_testing_queue_;
+
+    // 新增：播放队列（PCM），用于解码/输出解耦
+    static constexpr int MAX_PLAYBACK_TASKS_IN_QUEUE = 3;   // 队列上限=3
+    static constexpr int PLAYBACK_HIGH_WATERMARK = 2;       // 到2停止解码
+    static constexpr int PLAYBACK_LOW_WATERMARK  = 1;       // 回落到1恢复解码
+    std::deque<std::vector<int16_t>> audio_playback_queue_;
+    std::mutex playback_mutex_;
+    std::condition_variable playback_cv_;
+    std::atomic<bool> playback_backpressure_{false};         // 播放队列背压开关
 
     // 改进：并发解码控制，允许多个包同时处理
     std::atomic<int> active_decode_tasks_{0};  // 当前活跃的解码任务数
