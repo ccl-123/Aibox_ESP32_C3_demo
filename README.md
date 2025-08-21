@@ -17,30 +17,30 @@ Aibox_ESP32_C3_NEW 是一个基于 ESP32-C3 的智能音频设备项目，面向
 
 ```mermaid
 flowchart LR
-    MIC[Mic/Codec In] -->|PCM 16kHz| AP[AudioProcessor/WW]
-    AP --> AIIN[Application::OnAudioInput]
-    AIIN -->|Opus Encode/Send| PROTO[Protocol(MQTT)]
-    PROTO -->|Downlink: Opus Frames/JSON| AIOUT[Application::OnAudioOutput]
-    AIOUT -->|Opus Decode| DEC[OpusDecoder]
-    DEC -->|PCM| PLAYQ[[Playback Queue (PCM)]]
-    PLAYQ -->|I2S Write| I2S[I2S/Codec Out]
+    MIC["Mic/Codec In"] -->|"PCM 16kHz"| AP["AudioProcessor/WW"]
+    AP --> AIIN["Application::OnAudioInput"]
+    AIIN -->|"Opus Encode/Send"| PROTO["Protocol MQTT"]
+    PROTO -->|"Downlink: Opus Frames/JSON"| AIOUT["Application::OnAudioOutput"]
+    AIOUT -->|"Opus Decode"| DEC["OpusDecoder"]
+    DEC -->|"PCM"| PLAYQ["Playback Queue PCM"]
+    PLAYQ -->|"I2S Write"| I2S["I2S/Codec Out"]
 
-    subgraph Application
+    subgraph APP ["Application"]
       AIOUT
       AIIN
       DEC
       PLAYQ
     end
 
-    subgraph Protocol
+    subgraph PROT ["Protocol"]
       PROTO
     end
 
-    subgraph Board/HAL
+    subgraph BOARD ["Board/HAL"]
       I2S
     end
 
-    OTA[OTA Manager] -. control .-> Application
+    OTA["OTA Manager"] -.->|"control"| APP
 ```
 
 说明：
