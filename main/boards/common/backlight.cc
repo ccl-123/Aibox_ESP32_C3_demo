@@ -81,7 +81,13 @@ void Backlight::OnTransitionTimer() {
     }
 }
 
-PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert) : Backlight() {
+PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert) : Backlight(), pin_(pin), valid_gpio_(pin != GPIO_NUM_NC) {
+    // 如果GPIO无效（如无显示屏的情况），跳过PWM配置
+    if (!valid_gpio_) {
+        ESP_LOGI("PwmBacklight", "背光GPIO无效(GPIO_NUM_NC)，跳过PWM配置");
+        return;
+    }
+
     const ledc_timer_config_t backlight_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
@@ -109,10 +115,17 @@ PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert) : Backlight() {
 }
 
 PwmBacklight::~PwmBacklight() {
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    if (valid_gpio_) {
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    }
 }
 
 void PwmBacklight::SetBrightnessImpl(uint8_t brightness) {
+    if (!valid_gpio_) {
+        // 无有效GPIO时直接返回，避免PWM操作
+        return;
+    }
+    
     // LEDC resolution set to 10bits, thus: 100% = 1023
     uint32_t duty_cycle = (1023 * brightness) / 100;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_cycle);
