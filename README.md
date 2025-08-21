@@ -1,160 +1,194 @@
-# An MCP-based Chatbot | 一个基于 MCP 的聊天机器人
+## 项目概述
 
-（中文 | [English](README_en.md) | [日本語](README_ja.md)）
+Aibox_ESP32_C3_NEW 是一个基于 ESP32-C3 的智能音频设备项目，面向低功耗、低内存场景，提供稳定的语音交互能力。项目特性包括：
+- 语音交互：语音上行、TTS 下行播放
+- 实时播放：解码与播放任务分离，保障解码性能
+- 播放水位控制：背压策略防止内存溢出
+- OTA 升级：基于 ESP-IDF OTA，支持在线升级
+- 协议通信：MQTT（默认）；WebSocket 代码保留但默认不启用
 
-## 视频
+目标硬件：立创 ESP32-C3 开发板（lichuang c3 dev）。
 
-👉 [人类：给 AI 装摄像头 vs AI：当场发现主人三天没洗头【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
+---
 
-👉 [手工打造你的 AI 女友，新手入门教程【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
+## 系统架构
 
-## 介绍
+### 模块关系与数据流（Mermaid）
 
-这是一个由虾哥开源的 ESP32 项目，以 MIT 许可证发布，允许任何人免费使用，或用于商业用途。
+```mermaid
+flowchart LR
+    MIC[Mic/Codec In] -->|PCM 16kHz| AP[AudioProcessor/WW]
+    AP --> AIIN[Application::OnAudioInput]
+    AIIN -->|Opus Encode/Send| PROTO[Protocol(MQTT)]
+    PROTO -->|Downlink: Opus Frames/JSON| AIOUT[Application::OnAudioOutput]
+    AIOUT -->|Opus Decode| DEC[OpusDecoder]
+    DEC -->|PCM| PLAYQ[[Playback Queue (PCM)]]
+    PLAYQ -->|I2S Write| I2S[I2S/Codec Out]
 
-我们希望通过这个项目，能够帮助大家了解 AI 硬件开发，将当下飞速发展的大语言模型应用到实际的硬件设备中。
+    subgraph Application
+      AIOUT
+      AIIN
+      DEC
+      PLAYQ
+    end
 
-如果你有任何想法或建议，请随时提出 Issues 或加入 QQ 群：575180511
+    subgraph Protocol
+      PROTO
+    end
 
-### 基于 MCP 控制万物
+    subgraph Board/HAL
+      I2S
+    end
 
-小智 AI 聊天机器人作为一个语音交互入口，利用 Qwen / DeepSeek 等大模型的 AI 能力，通过 MCP 协议实现多端控制。
+    OTA[OTA Manager] -. control .-> Application
+```
 
-![通过MCP控制万物](docs/mcp-based-graph.jpg)
+说明：
+- 上行：麦克风 PCM 经过（可选）本地预处理后编码并通过协议发送
+- 下行：协议接收 Opus 帧 → 解码为 PCM → 写入播放队列 → 独立播放任务输出到 I2S
+- 背压：当播放队列达到阈值，暂停新的解码任务，让积压留在小内存的 Opus 队列
 
-### 已实现功能
+---
 
-- Wi-Fi / ML307 Cat.1 4G
-- 离线语音唤醒 [ESP-SR](https://github.com/espressif/esp-sr)
-- 支持两种通信协议（[Websocket](docs/websocket.md) 或 MQTT+UDP）
-- 采用 OPUS 音频编解码
-- 基于流式 ASR + LLM + TTS 架构的语音交互
-- 声纹识别，识别当前说话人的身份 [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- OLED / LCD 显示屏，支持表情显示
-- 电量显示与电源管理
-- 支持多语言（中文、英文、日文）
-- 支持 ESP32-C3、ESP32-S3、ESP32-P4 芯片平台
-- 通过设备端 MCP 实现设备控制（音量、灯光、电机、GPIO 等）
-- 通过云端 MCP 扩展大模型能力（智能家居控制、PC桌面操作、知识搜索、邮件收发等）
+## 核心模块详解
 
-## 硬件
+### Application 模块（main/application.cc, .h）
+- 职责：设备状态机（starting/listening/speaking/…）、主事件循环、音频上/下行协调
+- 解耦设计：
+  - OnAudioOutput 只负责“调度解码任务 + 入播放队列”，不阻塞 I2S 输出
+  - 独立播放任务消费播放队列，持续写 I2S，避免阻塞解码
+- 背压控制（默认配置）：
+  - 播放队列上限 MAX_PLAYBACK_TASKS_IN_QUEUE=3
+  - 高水位=2（暂停新的解码调度），低水位=1（恢复解码）
+  - 背压状态日志：[BACKPRESSURE] ENTER/EXIT，便于观察水位切换
+- STOP 行为：收到 STOP 后等待“解码完成 + 播放队列清空（无超时）”，再切状态，避免突然截断
 
-### 面包板手工制作实践
+### Protocol 模块（main/protocols/*）
+- 抽象接口：protocol.h
+  - SendAudio/SendStartListening/SendStopListening/SendAbortSpeaking/OnIncomingAudio/OnIncomingJson
+  - 虚接口 SendCancelTTS（默认空实现），MQTT 实现用于通知 TTS finish/stop
+- MQTT 实现：mqtt_protocol.{h,cc}
+  - 音频与控制消息的收发、Server VAD 处理
+  - 项目默认仅使用 MQTT；已在 Application 中通过静态转换调用 SendCancelTTS
+- WebSocket：保留代码，不作为本项目默认路径
 
-详见飞书文档教程：
+### Audio 模块（Opus/Resampler/I2S/背压）
+- 编解码：
+  - OpusDecoderWrapper/OpusEncoderWrapper（managed_components/esp-opus）
+  - 常用配置：16kHz, 单声道, 60ms 帧
+- 重采样：根据板载 Codec 采样率与服务端配置，自适应重采样
+- 播放：
+  - 独立播放任务（audio_playback），任务栈 8192，优先级 6
+  - I2S 写入耗时≈48–60ms/帧（16kHz/60ms），与理论一致
+- 背压：
+  - 当播放队列≥2：暂停新的解码调度（不丢帧）
+  - 当播放队列≤1：恢复解码调度
+  - 目的：让积压留在 Opus 队列（体积小），避免 PCM 队列撑爆内存
 
-👉 [《小智 AI 聊天机器人百科全书》](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
+### Board 模块（main/board.*）
+- 硬件抽象：音频 Codec、电源控制、网络启动等
+- 目标平台：立创 C3 开发板（lichuang c3 dev）
 
-面包板效果图如下：
+### OTA 模块（main/ota.*）
+- 使用 ESP-IDF OTA API
+- 支持在线检查与升级；URL 由 CONFIG_OTA_URL 指定
+- 典型配置：双分区升级、版本比较、错误处理、自动重启
 
-![面包板效果图](docs/v1/wiring2.jpg)
+### Display 模块
+- 项目中已移除显示功能（可能有少量状态栏刷新的调用）
 
-### 支持 70 多个开源硬件（仅展示部分）
+### Wake Word 模块（可选）
+- AFE/ESP/None 三态选择：CONFIG_USE_AFE_WAKE_WORD / CONFIG_USE_ESP_WAKE_WORD / 默认禁用
+- 用于语音唤醒与会话控制
 
-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="立创·实战派 ESP32-S3 开发板">立创·实战派 ESP32-S3 开发板</a>
-- <a href="https://github.com/espressif/esp-box" target="_blank" title="乐鑫 ESP32-S3-BOX3">乐鑫 ESP32-S3-BOX3</a>
-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="神奇按钮 2.4">神奇按钮 2.4</a>
-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="微雪电子 ESP32-S3-Touch-AMOLED-1.8">微雪电子 ESP32-S3-Touch-AMOLED-1.8</a>
-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="虾哥 Mini C3">虾哥 Mini C3</a>
-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">璀璨·AI 吊坠</a>
-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="无名科技Nologo-星智-1.54">无名科技 Nologo-星智-1.54TFT</a>
-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI 超低成本机器狗">ESP-HI 超低成本机器狗</a>
+### IoT 模块
+- iot/thing_manager：设备状态上报与控制接口预留
 
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="立创·实战派 ESP32-S3 开发板">
-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/espbox3.jpg" target="_blank" title="乐鑫 ESP32-S3-BOX3">
-    <img src="docs/v1/espbox3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
-    <img src="docs/v1/m5cores3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
-    <img src="docs/v1/atoms3r.jpg" width="240" />
-  </a>
-  <a href="docs/v1/magiclick.jpg" target="_blank" title="神奇按钮 2.4">
-    <img src="docs/v1/magiclick.jpg" width="240" />
-  </a>
-  <a href="docs/v1/waveshare.jpg" target="_blank" title="微雪电子 ESP32-S3-Touch-AMOLED-1.8">
-    <img src="docs/v1/waveshare.jpg" width="240" />
-  </a>
-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="虾哥 Mini C3">
-    <img src="docs/v1/xmini-c3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="无名科技Nologo-星智-1.54">
-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
-  </a>
-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
-  </a>
-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI 超低成本机器狗">
-    <img src="docs/v1/esp-hi.jpg" width="240" />
-  </a>
-</div>
+---
 
-## 软件
+## 关键技术特性
 
-### 固件烧录
+- 解码/播放任务彻底分离：避免 I2S 阻塞拖慢解码，解码耗时≈3–8ms/帧
+- 播放队列背压：小队列（上限=3，高=2/低=1）+ 背压暂停解码，防止 ESP32-C3 OOM
+- 服务端 VAD：支持基于下行端检测的直接 Speaking 切换
+- 协议：MQTT 默认；提供 TTS 取消（finish/stop）
+- STOP 优雅收尾：等待播放队列清空后再切状态
 
-新手第一次操作建议先不要搭建开发环境，直接使用免开发环境烧录的固件。
+---
 
-固件默认接入 [xiaozhi.me](https://xiaozhi.me) 官方服务器，个人用户注册账号可以免费使用 Qwen 实时模型。
+## 编译与部署
 
-👉 [新手烧录固件教程](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
+### 依赖
+- ESP-IDF（建议 5.x）环境已就绪（`idf.py` 可用）
+- Python 3，CMake/Ninja（IDF 自带）
 
-### 开发环境
+### 配置
+- 进入项目目录：
+  ```bash
+  cd Aibox_ESP32_C3_NEW
+  ```
+- 目标芯片：
+  ```bash
+  idf.py set-target esp32c3
+  ```
+- 可选配置（菜单）：
+  ```bash
+  idf.py menuconfig
+  ```
+  - OTA URL：`CONFIG_OTA_URL`
+  - AEC/Wake Word/协议等开关按需要配置
 
-- Cursor 或 VSCode
-- 安装 ESP-IDF 插件，选择 SDK 版本 5.4 或以上
-- Linux 比 Windows 更好，编译速度快，也免去驱动问题的困扰
-- 本项目使用 Google C++ 代码风格，提交代码时请确保符合规范
+### 构建/烧录/监视
+```bash
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
+# 退出监视：Ctrl + ]
+```
 
-### 开发者文档
+---
 
-- [自定义开发板指南](main/boards/README.md) - 学习如何为小智 AI 创建自定义开发板
-- [MCP 协议物联网控制用法说明](docs/mcp-usage.md) - 了解如何通过 MCP 协议控制物联网设备
-- [MCP 协议交互流程](docs/mcp-protocol.md) - 设备端 MCP 协议的实现方式
-- [一份详细的 WebSocket 通信协议文档](docs/websocket.md)
+## 故障排除（Troubleshooting）
 
-## 大模型配置
+### 1) 栈溢出 / Guru Meditation（SILK 编码）
+- 症状：Stack protection fault，回溯出现在 `silk_encode_frame_FIX`
+- 原因：Opus（SILK）编码栈需求大
+- 解决：
+  - 后台解码任务栈：`BackgroundTask(4096*7)`（约 28KB）
+  - 播放线程栈：8192（I2S 写/日志叠加更稳）
+  - 如仍有问题，可降低 Opus 复杂度、减少日志
 
-如果你已经拥有一个的小智 AI 聊天机器人设备，并且已接入官方服务器，可以登录 [xiaozhi.me](https://xiaozhi.me) 控制台进行配置。
+### 2) 内存不足 / 突发堆积
+- 症状：下行突发导致播放队列/OPUS 队列快速增长，可能触发复位
+- 解决：
+  - 播放队列保持很小（上限=3，高=2/低=1），启用背压
+  - 入口限速（服务端按帧率发包或设备端令牌桶）
+  - 监控 free/min（SystemInfo 已打印），必要时降低 OPUS 队列上限
 
-👉 [后台操作视频教程（旧版界面）](https://www.bilibili.com/video/BV1jUCUY2EKM/)
+### 3) 无声或突然截断
+- 检查：
+  - 是否把空 PCM 入队（已在代码中保护）
+  - 收到 STOP 后是否等待播放队列清空（已改为无超时等待）
 
-## 相关开源项目
+### 4) 日志乱码/串行中断
+- 长/多字节 Emoji 日志在复位前可能出现乱码（打印被打断）
+- 建议在压力测试中使用 ASCII 日志，降低串口干扰
 
-在个人电脑上部署服务器，可以参考以下第三方开源的项目：
+### 5) 协议相关
+- 仅用 MQTT：Application 中已直接调用 `MqttProtocol::SendCancelTTS`
+- 若切换协议，建议在 Protocol 抽象层覆写 `SendCancelTTS`
 
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python 服务器
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java 服务器
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang 服务器
+---
 
-使用小智通信协议的第三方客户端项目：
+## 日志参考
+- 解码完成：
+  - `[AUDIO-OUT] Decode complete: schedule_delay=1ms, opus=5ms, resample=0ms, enq_play=6ms, PLAY_Q=[2], REMAINING_TASKS=[0]`
+- 播放输出：
+  - `[AUDIO-PLAYBACK] output=59ms, queue=2`
+- 背压切换：
+  - 进入：`[BACKPRESSURE] ENTER backpressure: PLAY_Q=[2/3], HIGH=2, LOW=1`
+  - 退出：`[BACKPRESSURE] EXIT backpressure: PLAY_Q=[1/3], HIGH=2, LOW=1`
 
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python 客户端
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android 客户端
-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) 百问科技提供的 Linux 客户端
-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) 思澈科技的蓝牙芯片固件
-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) 移远提供的 QuecPython 固件
+---
 
-## Star History
 
-<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
- </picture>
-</a>
+
