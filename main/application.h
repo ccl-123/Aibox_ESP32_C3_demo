@@ -85,7 +85,7 @@ public:
     void SendMcpMessage(const std::string& payload);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
-    BackgroundTask* GetBackgroundTask() const { return background_task_; }
+    BackgroundTask* GetBackgroundTask() const { return background_task_.get(); }
 
 private:
     Application();
@@ -118,7 +118,7 @@ private:
 
     // Audio encode / decode
     TaskHandle_t audio_loop_task_handle_ = nullptr;
-    BackgroundTask* background_task_ = nullptr;
+    std::unique_ptr<BackgroundTask> background_task_;
     std::chrono::steady_clock::time_point last_output_time_;
     std::list<AudioStreamPacket> audio_send_queue_;
     // 优化：使用原始数据队列，避免AudioStreamPacket封装开销

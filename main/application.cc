@@ -57,7 +57,7 @@ Application::Application() {
     // 创建n个高优先级BackgroundTask线程，专门处理音频解码等实时任务(第二个参数)
     // 优先级5：项目初始默认任务优先级2；可适当提升
     // 栈大小：解码最小需要4KB*7;音频播放和解码已经完成解耦，使用独立任务播放队列。
-    background_task_ = new BackgroundTask(4096 * 7, 1, 5);
+    background_task_ = std::make_unique<BackgroundTask>(4096 * 7, 1, 5);
 
     ////初始化OTA相关参数
     ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
