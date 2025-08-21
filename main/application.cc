@@ -113,9 +113,7 @@ Application::~Application() {
 
     serial_tx_.reset();
 
-    if (background_task_ != nullptr) {
-        delete background_task_;
-    }
+
     vEventGroupDelete(event_group_);
 }
 
