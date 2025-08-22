@@ -56,10 +56,10 @@ static const char* const STATE_STRINGS[] = {
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
-    // 创建2个高优先级BackgroundTask线程，专门处理音频解码等实时任务
-    // 优先级6：高于默认任务(1-2)，但低于关键系统任务(7+)
-    // 栈大小28KB，足够处理OPUS编码等复杂任务
-    background_task_ = new BackgroundTask(4096 * 7, 2, 6);
+    // 创建n个高优先级BackgroundTask线程，专门处理音频解码等实时任务(第二个参数)
+    // 优先级5：项目初始默认任务优先级2；可适当提升
+    // 栈大小：解码最小需要4KB*7;音频播放和解码已经完成解耦，使用独立任务播放队列。
+    background_task_ = std::make_unique<BackgroundTask>(4096 * 7, 1, 5);
 
     ////初始化OTA相关参数
     ota_.SetCheckVersionUrl(CONFIG_OTA_URL);
@@ -105,9 +105,7 @@ Application::~Application() {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
     }
-    if (background_task_ != nullptr) {
-        delete background_task_;
-    }
+    // background_task_ 智能指针会自动释放
     vEventGroupDelete(event_group_);
 }
 
@@ -150,8 +148,7 @@ void Application::CheckNewVersion() {
           // 播放升级音频提示
           PlaySound(Lang::Sounds::P3_UPGRADE);
           ESP_LOGI(TAG, "Starting firmware upgrade...");
-          vTaskDelay(pdMS_TO_TICKS(2500));
-
+          vTaskDelay(pdMS_TO_TICKS(2500));          
           // 预先关闭音频输入输出，避免升级过程中的音频操作干扰
           codec->EnableInput(false);  // 关闭麦克风输入
 
@@ -269,7 +266,7 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
     };
     static const std::array<digit_sound, 10> digit_sounds{{
         digit_sound{'0', Lang::Sounds::P3_0},
-        digit_sound{'1', Lang::Sounds::P3_1}, 
+        digit_sound{'1', Lang::Sounds::P3_1},
         digit_sound{'2', Lang::Sounds::P3_2},
         digit_sound{'3', Lang::Sounds::P3_3},
         digit_sound{'4', Lang::Sounds::P3_4},
@@ -415,7 +412,7 @@ void Application::StartListening() {
         ESP_LOGE(TAG, "Protocol not initialized");
         return;
     }
-    
+
     if (device_state_ == kDeviceStateIdle) {
         Schedule([this]() {
             if (!protocol_->IsAudioChannelOpened()) {
@@ -500,6 +497,52 @@ void Application::Start() {
         vTaskDelete(NULL);
     }, "audio_loop", 4096 * 2, this, 8, &audio_loop_task_handle_);
 #endif
+    // 启动独立的播放任务：消费 PCM 播放队列并输出到 I2S
+#if CONFIG_USE_AUDIO_PROCESSOR
+    xTaskCreatePinnedToCore([](void* arg) {
+        Application* app = (Application*)arg;
+        auto codec = Board::GetInstance().GetAudioCodec();
+        for (;;) {
+            std::unique_lock<std::mutex> lock(app->playback_mutex_);
+            app->playback_cv_.wait(lock, [app]() { return !app->audio_playback_queue_.empty(); });
+            auto pcm = std::move(app->audio_playback_queue_.front());
+            app->audio_playback_queue_.pop_front();
+            bool now_empty = app->audio_playback_queue_.empty();
+            lock.unlock();
+            auto t0 = std::chrono::steady_clock::now();
+            codec->OutputData(pcm);
+            auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+            if (now_empty) {
+                // 通知 STOP 等待者：队列可能已清空
+                app->playback_cv_.notify_all();
+            }
+        }
+        vTaskDelete(NULL);
+    }, "audio_playback", 8192, this, 6, nullptr, 1);
+#else
+    xTaskCreate([](void* arg) {
+        Application* app = (Application*)arg;
+        auto codec = Board::GetInstance().GetAudioCodec();
+        for (;;) {
+            std::unique_lock<std::mutex> lock(app->playback_mutex_);
+            app->playback_cv_.wait(lock, [app]() { return !app->audio_playback_queue_.empty(); });
+            auto pcm = std::move(app->audio_playback_queue_.front());
+            app->audio_playback_queue_.pop_front();
+            bool now_empty = app->audio_playback_queue_.empty();
+            lock.unlock();
+            auto t0 = std::chrono::steady_clock::now();
+            codec->OutputData(pcm);
+            auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+            if (now_empty) {
+                app->playback_cv_.notify_all();
+            }
+        }
+        vTaskDelete(NULL);
+    }, "audio_playback", 8192, this, 6, nullptr);
+#endif
+
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -561,30 +604,58 @@ void Application::Start() {
 
 
     protocol_->OnIncomingAudio([this](std::vector<uint8_t>&& raw_data) {
-        static uint32_t packet_counter = 0;
-        static auto last_packet_time = std::chrono::steady_clock::now();
-        auto current_time = std::chrono::steady_clock::now();
-        auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
-        last_packet_time = current_time;
+        // 统计信息（如需调试可开启）
+        // static uint32_t packet_counter = 0;
+        // static auto last_packet_time = std::chrono::steady_clock::now();
+        // auto current_time = std::chrono::steady_clock::now();
+        // auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
+        // last_packet_time = current_time;
 
         std::lock_guard<std::mutex> lock(mutex_);
-
-        // 详细日志：每个包都记录，便于分析服务端发送间隔
-        // ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
-        //          ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
-        //          (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
-
+        
         // 检查是否应该接收音频数据
-        if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
-            audio_decode_queue_.emplace_back(std::move(raw_data));
-            // ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
-            //          (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+        if (!aborted_ && device_state_ == kDeviceStateSpeaking) {
+            // 若未满，直接入队
+            if (audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
+                audio_decode_queue_.emplace_back(std::move(raw_data));
+                ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
+                         (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+            } else {
+                // 队列已满：采用“间隔抽帧”策略，减少连续丢帧的可感知度
+                // 目标：抽走若干旧帧（每 AUDIO_THINNING_STRIDE 抽 1 帧），为新帧腾出空间
+                int removed = 0;
+                if (!audio_decode_queue_.empty()) {
+                    // 使用一次线性扫描实现间隔抽取：保留大多数旧帧，稀疏移除
+                    std::list<std::vector<uint8_t>> kept;
+                    size_t idx = 0;
+                    for (auto it = audio_decode_queue_.begin(); it != audio_decode_queue_.end(); ++it, ++idx) {
+                        bool should_remove = (idx % AUDIO_THINNING_STRIDE == (AUDIO_THINNING_STRIDE - 1))
+                                             && (removed < AUDIO_THINNING_MAX_REMOVE);
+                        if (should_remove) {
+                            removed++;
+                        } else {
+                            kept.emplace_back(std::move(*it));
+                        }
+                    }
+                    audio_decode_queue_.swap(kept);
+                }
+
+                // 若通过抽帧成功释放了空间，则插入当前新帧；否则丢弃当前帧
+                if (audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
+                    audio_decode_queue_.emplace_back(std::move(raw_data));
+                    ESP_LOGW(TAG, "[AUDIO-RX] ⚖️ thinning applied: removed=%d, new_size=%u/%d",
+                             removed, (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+                } else {
+                    ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROP new (queue_full even after thinning), kept=%u/%d",
+                             (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+                }
+            }
         } else {
             // 详细记录丢包原因
             const char* drop_reason = "unknown";
             if (aborted_) drop_reason = "aborted";
             else if (device_state_ != kDeviceStateSpeaking) drop_reason = "wrong_state";
-            else if (audio_decode_queue_.size() >= MAX_AUDIO_PACKETS_IN_QUEUE) drop_reason = "queue_full";
+            else drop_reason = "queue_full";
 
             // ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROPPED packet - reason:%s, aborted:%d state:%d 📦QUEUE=[%u/%d] 🔧TASKS=%d",
             //          drop_reason, aborted_ ? 1 : 0, device_state_, (unsigned)audio_decode_queue_.size(),
@@ -635,7 +706,16 @@ void Application::Start() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 ESP_LOGW(TAG, "--------------------GET STOP----------------------");
                 Schedule([this]() {
+                    // 等待解码任务完成
                     background_task_->WaitForCompletion();
+
+                    // 等待播放队列清空：让已解码的PCM播放完毕，避免音频突然截断
+                    ESP_LOGI(TAG, "[AUDIO-STOP] Waiting for playback queue to drain (no timeout)...");
+                    std::unique_lock<std::mutex> plock(playback_mutex_);
+                    playback_cv_.wait(plock, [this]() { return audio_playback_queue_.empty(); });
+                    plock.unlock();
+                    ESP_LOGI(TAG, "[AUDIO-STOP] Playback queue drained, final size: %u", (unsigned)audio_playback_queue_.size());
+
                     // Always honor stop even if speaking flag was not set due to ordering
                     aborted_ = false; // clear abort flag to allow next round
                     if (listening_mode_ == kListeningModeManualStop) {
@@ -882,7 +962,7 @@ void Application::Start() {
 
             if (device_state_ == kDeviceStateIdle) {
                 wake_word_->EncodeWakeWordData();
-                
+
                 if (!protocol_->IsAudioChannelOpened()) {
                     SetDeviceState(kDeviceStateConnecting);
                     if (!protocol_->OpenAudioChannel()) {
@@ -1024,10 +1104,36 @@ void Application::AudioLoop() {
 
 void Application::OnAudioOutput() {
     // 修复：检查并发解码任务数，但允许一定的队列积压处理
+    // 解码并发限制 & 播放队列背压：当播放队列达到高水位时，暂停新的解码调度
     int current_tasks = active_decode_tasks_.load();
+    bool prev_bp = playback_backpressure_.load();
+    unsigned play_q_size = 0;
+    {
+        std::lock_guard<std::mutex> plock(playback_mutex_);
+        play_q_size = (unsigned)audio_playback_queue_.size();
+        bool new_bp = prev_bp;
+        if ((int)play_q_size >= PLAYBACK_HIGH_WATERMARK) new_bp = true;
+        else if ((int)play_q_size <= PLAYBACK_LOW_WATERMARK) new_bp = false;
+        if (new_bp != prev_bp) {
+            playback_backpressure_.store(new_bp);
+            if (new_bp) {
+                // ESP_LOGW(TAG, "[BACKPRESSURE] 🔴 ENTER backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
+                //          play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                //          PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
+            } else {
+                // ESP_LOGI(TAG, "[BACKPRESSURE] 🟢 EXIT backpressure: 📦PLAY_Q=[%u/%u], HIGH=%d, LOW=%d",
+                //          play_q_size, (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                //          PLAYBACK_HIGH_WATERMARK, PLAYBACK_LOW_WATERMARK);
+            }
+        } else {
+            playback_backpressure_.store(new_bp);
+        }
+    }
+    if (playback_backpressure_.load()) {
+        // 背压生效：不再调度新的解码任务，让 OPUS 帧先积压在解码队列（内存小）
+        return;
+    }
     if (current_tasks >= MAX_CONCURRENT_DECODE_TASKS) {
-        // ESP_LOGW(TAG, "[AUDIO-OUT] ⏸️ Max concurrent tasks reached 🔧[%d/%d], skipping - QUEUE_SIZE=%u",
-        //          current_tasks, MAX_CONCURRENT_DECODE_TASKS, (unsigned)audio_decode_queue_.size());
         return;
     }
 
@@ -1050,7 +1156,7 @@ void Application::OnAudioOutput() {
     // 优化：直接处理原始音频数据，避免packet解包开销
     auto raw_data = std::move(audio_decode_queue_.front());
     audio_decode_queue_.pop_front();
-    size_t remaining_queue_size = audio_decode_queue_.size();
+    // size_t remaining_queue_size = audio_decode_queue_.size(); // unused
     lock.unlock();
     audio_decode_cv_.notify_all();
 
@@ -1096,17 +1202,29 @@ void Application::OnAudioOutput() {
         auto resample_end = std::chrono::steady_clock::now();
         auto resample_ms = std::chrono::duration_cast<std::chrono::milliseconds>(resample_end - resample_start).count();
 
-        auto output_start = std::chrono::steady_clock::now();
-        codec->OutputData(pcm);
-        auto output_end = std::chrono::steady_clock::now();
-        auto output_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - output_start).count();
+        // 改造：将 PCM 放入播放队列，交由独立播放任务处理，避免在解码线程阻塞
+        // 重要：只有解码成功且PCM非空时才入队
+        if (!pcm.empty()) {
+            std::lock_guard<std::mutex> plock(playback_mutex_);
+            // 只做硬上限保护，不丢帧：当超过硬上限时，不入队（回退由背压控制），避免OOM
+            if ((int)audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
+                ESP_LOGW(TAG, "[AUDIO-PLAYBACK] ⏸️ playback queue at hard limit (%u/%u), skip enqueue; backpressure=%d",
+                         (unsigned)audio_playback_queue_.size(), (unsigned)MAX_PLAYBACK_TASKS_IN_QUEUE,
+                         (int)playback_backpressure_.load());
+            } else {
+                audio_playback_queue_.emplace_back(std::move(pcm));
+                playback_cv_.notify_one();
+            }
+        } else {
+            ESP_LOGE(TAG, "[AUDIO-OUT] ❌ Decoded PCM is empty, skipping playback queue");
+        }
 
-        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_end - decode_start_time).count();
+        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - decode_start_time).count();
 
         // 任务完成，减少计数器
         int remaining_tasks = active_decode_tasks_.fetch_sub(1) - 1;
-        // ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, output=%dms, total=%dms, pcm_samples=%u, 🔧REMAINING_TASKS=[%d]",
-        //          (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)output_ms, (int)total_ms, (unsigned)pcm.size(), remaining_tasks);
+        ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, enq_play=%dms, pcm_samples=%u, 📦PLAY_Q=[%u], 🔧REMAINING_TASKS=[%d]",
+                 (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)total_ms, (unsigned)pcm.size(), (unsigned)audio_playback_queue_.size(), remaining_tasks);
 
 #ifdef CONFIG_USE_SERVER_AEC
         // 原始数据没有时间戳，使用当前时间
@@ -1119,7 +1237,7 @@ void Application::OnAudioOutput() {
 
 void Application::OnAudioInput() {
     //ESP_LOGW(TAG, "=====================  OnAudioInput  ======================");
-    
+
     if (device_state_ == kDeviceStateAudioTesting) {
         if (audio_testing_queue_.size() >= AUDIO_TESTING_MAX_DURATION_MS / OPUS_FRAME_DURATION_MS) {
             ExitAudioTestingMode();
@@ -1223,12 +1341,12 @@ bool Application::ReadAudio(std::vector<int16_t>& data, int sample_rate, int sam
             return false;
         }
     }
-    
+
     // 音频调试：发送原始音频数据
     if (audio_debugger_) {
         audio_debugger_->Feed(data);
     }
-    
+
     return true;
 }
 
@@ -1237,6 +1355,8 @@ void Application::AbortSpeaking(AbortReason reason) {
     aborted_ = true;
     protocol_->SendAbortSpeaking(reason);
     // Immediately stop playback and clear queues; switch state out of speaking
+    auto mqtt = static_cast<MqttProtocol*>(protocol_.get());
+    mqtt->SendCancelTTS(!aborted_); // 发送取消TTS（文本转语音）的请求（finish/stop）
     ResetDecoder();
     if (listening_mode_ == kListeningModeManualStop) {
         SetDeviceState(kDeviceStateIdle);
@@ -1390,14 +1510,14 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         ToggleChatState();
         Schedule([this, wake_word]() {
             if (protocol_) {
-                protocol_->SendWakeWordDetected(wake_word); 
+                    protocol_->SendWakeWordDetected(wake_word);
             }
-        }); 
+        });
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
             AbortSpeaking(kAbortReasonNone);
         });
-    } else if (device_state_ == kDeviceStateListening) {   
+    } else if (device_state_ == kDeviceStateListening) {
         Schedule([this]() {
             if (protocol_) {
                 protocol_->CloseAudioChannel();
