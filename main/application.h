@@ -52,6 +52,11 @@ enum DeviceState {
 #define OPUS_FRAME_DURATION_MS 60
 #define MAX_AUDIO_PACKETS_IN_QUEUE 200  // 缓冲区解码音频
 #define AUDIO_TESTING_MAX_DURATION_MS 10000
+// 当解码队列达到上限时的“间隔抽帧”策略参数
+// 每 AUDIO_THINNING_STRIDE 帧抽走 1 帧；一次最多抽走 AUDIO_THINNING_MAX_REMOVE 帧
+#define AUDIO_THINNING_STRIDE 10
+#define AUDIO_THINNING_MAX_REMOVE 20
+
 
 class Application {
 public:

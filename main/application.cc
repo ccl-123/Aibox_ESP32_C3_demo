@@ -593,30 +593,58 @@ void Application::Start() {
 
 
     protocol_->OnIncomingAudio([this](std::vector<uint8_t>&& raw_data) {
-        static uint32_t packet_counter = 0;
-        static auto last_packet_time = std::chrono::steady_clock::now();
-        auto current_time = std::chrono::steady_clock::now();
-        auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
-        last_packet_time = current_time;
+        // 统计信息（如需调试可开启）
+        // static uint32_t packet_counter = 0;
+        // static auto last_packet_time = std::chrono::steady_clock::now();
+        // auto current_time = std::chrono::steady_clock::now();
+        // auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
+        // last_packet_time = current_time;
 
         std::lock_guard<std::mutex> lock(mutex_);
-
-        // 详细日志：每个包都记录，便于分析服务端发送间隔
-        // ESP_LOGI(TAG, "[AUDIO-RX] Packet #%" PRIu32 ": size=%u bytes, interval=%dms, state=%d, 📦QUEUE=[%u/%d], 🔧TASKS=%d",
-        //          ++packet_counter, (unsigned)raw_data.size(), (int)interval_ms, device_state_,
-        //          (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE, active_decode_tasks_.load());
-
+        
         // 检查是否应该接收音频数据
-        if (!aborted_ && device_state_ == kDeviceStateSpeaking && audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
-            audio_decode_queue_.emplace_back(std::move(raw_data));
-            ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
-                     (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+        if (!aborted_ && device_state_ == kDeviceStateSpeaking) {
+            // 若未满，直接入队
+            if (audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
+                audio_decode_queue_.emplace_back(std::move(raw_data));
+                ESP_LOGI(TAG, "[AUDIO-RX] 🔊 Added packet to queue, 📦NEW_SIZE=[%u/%d]",
+                         (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+            } else {
+                // 队列已满：采用“间隔抽帧”策略，减少连续丢帧的可感知度
+                // 目标：抽走若干旧帧（每 AUDIO_THINNING_STRIDE 抽 1 帧），为新帧腾出空间
+                int removed = 0;
+                if (!audio_decode_queue_.empty()) {
+                    // 使用一次线性扫描实现间隔抽取：保留大多数旧帧，稀疏移除
+                    std::list<std::vector<uint8_t>> kept;
+                    size_t idx = 0;
+                    for (auto it = audio_decode_queue_.begin(); it != audio_decode_queue_.end(); ++it, ++idx) {
+                        bool should_remove = (idx % AUDIO_THINNING_STRIDE == (AUDIO_THINNING_STRIDE - 1))
+                                             && (removed < AUDIO_THINNING_MAX_REMOVE);
+                        if (should_remove) {
+                            removed++;
+                        } else {
+                            kept.emplace_back(std::move(*it));
+                        }
+                    }
+                    audio_decode_queue_.swap(kept);
+                }
+
+                // 若通过抽帧成功释放了空间，则插入当前新帧；否则丢弃当前帧
+                if (audio_decode_queue_.size() < MAX_AUDIO_PACKETS_IN_QUEUE) {
+                    audio_decode_queue_.emplace_back(std::move(raw_data));
+                    ESP_LOGW(TAG, "[AUDIO-RX] ⚖️ thinning applied: removed=%d, new_size=%u/%d",
+                             removed, (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+                } else {
+                    ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROP new (queue_full even after thinning), kept=%u/%d",
+                             (unsigned)audio_decode_queue_.size(), MAX_AUDIO_PACKETS_IN_QUEUE);
+                }
+            }
         } else {
             // 详细记录丢包原因
             const char* drop_reason = "unknown";
             if (aborted_) drop_reason = "aborted";
             else if (device_state_ != kDeviceStateSpeaking) drop_reason = "wrong_state";
-            else if (audio_decode_queue_.size() >= MAX_AUDIO_PACKETS_IN_QUEUE) drop_reason = "queue_full";
+            else drop_reason = "queue_full";
 
             ESP_LOGW(TAG, "[AUDIO-RX] ❌ DROPPED packet - reason:%s, aborted:%d state:%d 📦QUEUE=[%u/%d] 🔧TASKS=%d",
                      drop_reason, aborted_ ? 1 : 0, device_state_, (unsigned)audio_decode_queue_.size(),
@@ -1007,7 +1035,7 @@ void Application::OnAudioOutput() {
     // 优化：直接处理原始音频数据，避免packet解包开销
     auto raw_data = std::move(audio_decode_queue_.front());
     audio_decode_queue_.pop_front();
-    size_t remaining_queue_size = audio_decode_queue_.size();
+    // size_t remaining_queue_size = audio_decode_queue_.size(); // unused
     lock.unlock();
     audio_decode_cv_.notify_all();
 
