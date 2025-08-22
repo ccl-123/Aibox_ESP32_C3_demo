@@ -534,7 +534,7 @@ void Application::Start() {
             auto t0 = std::chrono::steady_clock::now();
             codec->OutputData(pcm);
             auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-            ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+            //ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
             if (now_empty) {
                 app->playback_cv_.notify_all();
             }
@@ -1223,8 +1223,8 @@ void Application::OnAudioOutput() {
 
         // 任务完成，减少计数器
         int remaining_tasks = active_decode_tasks_.fetch_sub(1) - 1;
-        ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, enq_play=%dms, pcm_samples=%u, 📦PLAY_Q=[%u], 🔧REMAINING_TASKS=[%d]",
-                 (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)total_ms, (unsigned)pcm.size(), (unsigned)audio_playback_queue_.size(), remaining_tasks);
+        // ESP_LOGI(TAG, "[AUDIO-OUT] ✅ Decode complete: schedule_delay=%dms, opus=%dms, resample=%dms, enq_play=%dms, pcm_samples=%u, 📦PLAY_Q=[%u], 🔧REMAINING_TASKS=[%d]",
+        //          (int)schedule_delay_ms, (int)opus_decode_ms, (int)resample_ms, (int)total_ms, (unsigned)pcm.size(), (unsigned)audio_playback_queue_.size(), remaining_tasks);
 
 #ifdef CONFIG_USE_SERVER_AEC
         // 原始数据没有时间戳，使用当前时间
@@ -1472,7 +1472,7 @@ void Application::ResetDecoder() {
     auto codec = Board::GetInstance().GetAudioCodec();
     codec->EnableOutput(true);
 
-    ESP_LOGI(TAG, "[AUDIO-RESET] 🔄 Decoder reset, 📦CLEARED=[%u] packets, output enabled", (unsigned)cleared_packets);
+    //ESP_LOGI(TAG, "[AUDIO-RESET] 🔄 Decoder reset, 📦CLEARED=[%u] packets, output enabled", (unsigned)cleared_packets);
 }
 
 void Application::SetDecodeSampleRate(int sample_rate, int frame_duration) {
