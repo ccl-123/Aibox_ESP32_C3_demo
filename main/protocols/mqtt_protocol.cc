@@ -16,6 +16,8 @@
 // 构造函数，创建事件组
 MqttProtocol::MqttProtocol() {
     event_group_handle_ = xEventGroupCreate();
+    // 初始化VAD防抖时间为很久以前，确保第一次VAD END能正常处理
+    last_vad_end_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 }
 
 // 析构函数，清理资源
@@ -495,9 +497,27 @@ void MqttProtocol::HandleVadDetectionMessage(const std::string& payload) {
     cleanup();
 }
 
-// 服务端VAD检测处理 通知APP层（不做本地防抖）
+// 服务端VAD检测处理 通知APP层（带防抖处理）
 void MqttProtocol::HandleServerVadDetection() {
-    ESP_LOGI(TAG, "Server VAD detected speech end, notify application");
+    std::lock_guard<std::mutex> lock(vad_debounce_mutex_);
+
+    auto current_time = std::chrono::steady_clock::now();
+    auto time_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+        current_time - last_vad_end_time_).count();
+
+    // 防抖检查：如果距离上次处理时间小于防抖间隔，则忽略
+    if (time_since_last < VAD_END_DEBOUNCE_MS) {
+        ESP_LOGW(TAG, "VAD END debounced: ignored (time_since_last=%lldms < %dms)",
+                 time_since_last, VAD_END_DEBOUNCE_MS);
+        return;
+    }
+
+    // 更新最后处理时间
+    last_vad_end_time_ = current_time;
+
+    ESP_LOGI(TAG, "Server VAD detected speech end, notify application (time_since_last=%lldms)",
+             time_since_last);
+
     if (on_server_vad_detected_) {
         on_server_vad_detected_();
     } else {
