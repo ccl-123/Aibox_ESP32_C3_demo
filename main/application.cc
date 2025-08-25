@@ -1081,7 +1081,7 @@ void Application::OnAudioOutput() {
     // 优化：直接处理原始音频数据，避免packet解包开销
     auto raw_data = std::move(audio_decode_queue_.front());
     audio_decode_queue_.pop_front();
-    // size_t remaining_queue_size = audio_decode_queue_.size(); // unused
+    size_t remaining_queue_size = audio_decode_queue_.size();
     lock.unlock();
     audio_decode_cv_.notify_all();
 
