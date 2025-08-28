@@ -16,6 +16,8 @@
 #include "boards/lichuang-c3-dev/device_manager.h"
 //添加串口RX功能
 #include "boards/lichuang-c3-dev/uart_rx.h"
+//添加IMU数据结构体支持
+#include "esp32_s3_szp.h"
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "afe_audio_processor.h"
@@ -538,7 +540,7 @@ void Application::Start() {
             auto t0 = std::chrono::steady_clock::now();
             codec->OutputData(pcm);
             auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-            //ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
+            ESP_LOGI(TAG, "[AUDIO-PLAYBACK] 🎧 output=%dms, queue=%u", ms, (unsigned)app->audio_playback_queue_.size());
             if (now_empty) {
                 app->playback_cv_.notify_all();
             }
@@ -617,6 +619,20 @@ void Application::Start() {
         // static auto last_packet_time = std::chrono::steady_clock::now();
         // auto current_time = std::chrono::steady_clock::now();
         // auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
+        // last_packet_time = current_time;
+
+        // 音频接收统计和日志
+        // static uint32_t packet_counter = 0;
+        // static auto last_packet_time = std::chrono::steady_clock::now();
+        // auto current_time = std::chrono::steady_clock::now();
+        // auto interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_packet_time).count();
+        
+        // packet_counter++;
+        
+        // // 打印音频接收日志
+        ESP_LOGI(TAG, "[AUDIO-RX] 🎵 Received audio packet  size=%u bytes, state=%s", 
+                 (unsigned)raw_data.size(), STATE_STRINGS[device_state_]);
+        
         // last_packet_time = current_time;
 
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1042,20 +1058,11 @@ void Application::Start() {
                 ESP_LOGI("UART_RX_Task", "UART RX Task started on core %d", xPortGetCoreID());
                 
                 while (true) {
-                    // 处理串口接收数据
+                    // 只处理串口接收数据，按键处理已移至专门的线程
                     UART_RX_DATA();
                     
-                    // 检查是否有按键按下
-                    if (uart_rx_key_press) {
-                        ESP_LOGI("UART_RX_Task", "Key pressed: %c (decimal: %d)", 
-                                uart_rx_button_value, uart_rx_button_value_int);
-                        
-                        // 在这里可以添加按键处理逻辑
-                        // 例如：控制设备状态、发送MQTT消息等
-                    }
-                    
                     // 任务延时100ms
-                    vTaskDelay(pdMS_TO_TICKS(100));
+                    vTaskDelay(pdMS_TO_TICKS(30));
                 }
             }, "UART_RX_Task", 4096, NULL, 1, NULL);
 
@@ -1063,6 +1070,74 @@ void Application::Start() {
         } else {
             ESP_LOGW(TAG, "UART RX initialization failed - 433串口功能不可用，但系统继续正常运行");
         }
+        
+        // 创建433按键处理线程（无论UART是否成功初始化都创建，内部会检查UART状态）
+        ESP_LOGI(TAG, "Creating 433 key handler task...");
+        xTaskCreate([](void* arg) {
+            Application* app = (Application*)arg;
+            ESP_LOGI("Key433_Handler", "433 Key Handler Task started on core %d", xPortGetCoreID());
+            
+            bool last_key_state = false;  // 记录上次按键状态，用于检测按键事件
+            
+            while (true) {
+                // 检查UART是否已初始化
+                if (UART_RX_IsInitialized()) {
+
+                    #if 1
+                    if (uart_rx_key_press){
+                        app->Schedule([app]() {
+                            auto* protocol = app->GetProtocol();
+                            if (!protocol)return; 
+                                // 创建全零的IMU数据
+                             t_sQMI8658 imu_data = {};  // 所有成员初始化为0
+                                
+                            // 获取MQTT协议实例并发送数据
+                            auto* mqtt_protocol = static_cast<MqttProtocol*>(protocol);
+                            mqtt_protocol->SendImuStatesAndValue(imu_data, (uart_rx_button_value_int/2));
+                        });
+                        uart_rx_key_press = false; // 清除按键状态，避免重复发送
+
+                    }
+                    #else
+
+                    // 检查是否有按键按下（边沿触发，避免重复发送）
+                    if (uart_rx_key_press && !last_key_state) {
+                        ESP_LOGI("Key433_Handler", "433 Key pressed: %c (decimal: %d)", 
+                                uart_rx_button_value, uart_rx_button_value_int);
+                        
+                        // 发送MQTT消息到云端
+                        app->Schedule([app]() {
+                            auto* protocol = app->GetProtocol();
+                            if (protocol && protocol->IsAudioChannelOpened()) {
+                                // 创建全零的IMU数据
+                                t_sQMI8658 imu_data = {};  // 所有成员初始化为0
+                                
+                                // 获取MQTT协议实例并发送数据
+                                auto* mqtt_protocol = static_cast<MqttProtocol*>(protocol);
+                                mqtt_protocol->SendImuStatesAndValue(imu_data, uart_rx_button_value_int);
+                                
+                                ESP_LOGI("Key433_Handler", "Sent 433 key data to cloud: touch_value=%d", 
+                                        uart_rx_button_value_int);
+                            } else {
+                                ESP_LOGW("Key433_Handler", "MQTT not connected, skipping 433 key data transmission");
+                            }
+                        });
+                    }
+
+                    #endif
+
+
+                    
+                    // 更新按键状态
+                    last_key_state = uart_rx_key_press;
+                }
+                
+                // 任务延时50ms，提供较快的响应速度
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+        }, "Key433_Handler", 4000, this, 2, NULL);
+        
+        ESP_LOGI(TAG, "433 Key Handler task created successfully");
     });
 
     // Enter the main event loop
@@ -1195,13 +1270,14 @@ void Application::OnAudioOutput() {
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (audio_decode_queue_.empty()) {
+        // 注释掉自动禁用音频功放的逻辑，保持音频功放一直启用
         // Disable the output if there is no audio data for a long time
-        if (device_state_ == kDeviceStateIdle) {
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time_).count();
-            if (duration > max_silence_seconds) {
-                codec->EnableOutput(false);
-            }
-        }
+        // if (device_state_ == kDeviceStateIdle) {
+        //     auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time_).count();
+        //     if (duration > max_silence_seconds) {
+        //         codec->EnableOutput(false);
+        //     }
+        // }
         return;
     }
 
