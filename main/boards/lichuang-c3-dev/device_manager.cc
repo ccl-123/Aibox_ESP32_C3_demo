@@ -602,8 +602,11 @@ void DeviceManager::HandleRemoteVolumeControl(const std::string& value) {
         if (new_volume > 100) new_volume = 100;
     } else if (value == "++") {
         // 增加2档 (20)
-        new_volume = current_volume + 20;
-        if (new_volume > 100) new_volume = 100;
+        // new_volume = current_volume + 20;
+        // if (new_volume > 100) new_volume = 100;
+
+        //直接设置为最大音量100
+        new_volume = 100;
     } else if (value == "-") {
         // 减少1档 (10)
         if (current_volume >= 70) {
@@ -613,11 +616,14 @@ void DeviceManager::HandleRemoteVolumeControl(const std::string& value) {
         }
     } else if (value == "--") {
         // 减少2档 (20)
-        if (current_volume >= 80) {
-            new_volume = current_volume - 20;
-        } else {
-            new_volume = 60; // 确保不低于最小值
-        }
+        // if (current_volume >= 80) {
+        //     new_volume = current_volume - 20;
+        // } else {
+        //     new_volume = 60; // 确保不低于最小值
+        // }
+
+        //直接设置为最小音量60
+        new_volume = 60;
     } else {
         ESP_LOGW(TAG, "未知的音量控制值: %s", value.c_str());
         return;
