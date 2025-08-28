@@ -215,6 +215,45 @@ void DeviceManager::NextVolumeLevel() {
     SetVolume(new_volume);
 }
 
+void DeviceManager::EnableAudioPA(bool enable) {
+    if (audio_pa_enabled_ == enable) {
+        return; // 状态未改变，直接返回
+    }
+    
+    audio_pa_enabled_ = enable;
+    
+    if (!aw9523_) {
+        ESP_LOGE(TAG, "AW9523对象为空，无法控制音频功放");
+        return;
+    }
+    
+    // 控制AW9523B的P0_5引脚 (引脚5) - 需要读取当前状态，修改特定位，然后写回
+    uint8_t current_p0, current_p1;
+    if (aw9523_->read_outputs(&current_p0, &current_p1) != ESP_OK) {
+        ESP_LOGE(TAG, "读取AW9523B当前输出状态失败");
+        return;
+    }
+    
+    // 修改P0_5位 (第5位)
+    if (enable) {
+        current_p0 |= (1 << 5);  // 设置第5位为1
+    } else {
+        current_p0 &= ~(1 << 5); // 设置第5位为0
+    }
+    
+    if (aw9523_->write_outputs(0, current_p0) != ESP_OK) {
+        ESP_LOGE(TAG, "设置音频功放状态失败: P0_5 = %d", enable ? 1 : 0);
+        return;
+    }
+    
+    ESP_LOGI(TAG, "🔊 音频功放%s (AW9523B P0_5 = %d)", 
+             enable ? "已启用" : "已禁用", enable ? 1 : 0);
+}
+
+bool DeviceManager::IsAudioPAEnabled() const {
+    return audio_pa_enabled_;
+}
+
 void DeviceManager::SaveSettings() {
     if (!settings_) {
         ESP_LOGE(TAG, "Settings对象为空，无法保存设置");

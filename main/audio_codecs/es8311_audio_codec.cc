@@ -1,4 +1,6 @@
 #include "es8311_audio_codec.h"
+#include "board.h"
+#include "boards/lichuang-c3-dev/device_manager.h"
 
 #include <esp_log.h>
 
@@ -168,6 +170,14 @@ void Es8311AudioCodec::EnableOutput(bool enable) {
     }
     AudioCodec::EnableOutput(enable);
     UpdateDeviceState();
+    
+    // 如果PA引脚未设置(使用AW9523B控制)，通过DeviceManager控制音频功放
+    if (pa_pin_ == GPIO_NUM_NC) {
+        auto* device_manager = Board::GetInstance().GetDeviceManager();
+        if (device_manager) {
+            device_manager->EnableAudioPA(enable);
+        }
+    }
 }
 
 int Es8311AudioCodec::Read(int16_t* dest, int samples) {

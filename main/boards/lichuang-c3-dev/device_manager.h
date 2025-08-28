@@ -48,6 +48,10 @@ public:
     uint8_t GetVolume() const;
     void NextVolumeLevel();
     
+    // 音频功放控制 (使用AW9523B P0_5)
+    void EnableAudioPA(bool enable);
+    bool IsAudioPAEnabled() const;
+    
     // 设置保存和恢复
     void SaveSettings();
     void LoadSettings();
@@ -80,6 +84,7 @@ private:
     bool suck_running_ = false;
     bool loose_running_ = false;  // 放气运行状态
     bool heater_running_ = false;
+    bool audio_pa_enabled_ = false;  // 音频功放状态
     
     // PWM 相关
     TimerHandle_t pwm_timer_;

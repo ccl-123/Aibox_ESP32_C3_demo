@@ -15,7 +15,9 @@
 #define AUDIO_I2S_GPIO_DOUT GPIO_NUM_4
 
 #define AUDIO_CODEC_USE_PCA9557
-#define AUDIO_CODEC_PA_PIN       GPIO_NUM_10
+// 音频功放引脚改为使用AW9523B的P0_5，释放GPIO10给433串口使用
+#define AUDIO_CODEC_PA_PIN       GPIO_NUM_NC  // 不使用ESP32-C3 GPIO，改用AW9523B P0_5
+#define AUDIO_CODEC_PA_AW9523_PIN 5  // 使用AW9523B的P0_5引脚控制音频功放
 #define AUDIO_CODEC_I2C_SDA_PIN  GPIO_NUM_0
 #define AUDIO_CODEC_I2C_SCL_PIN  GPIO_NUM_1
 #define AUDIO_CODEC_ES8311_ADDR  ES8311_CODEC_DEFAULT_ADDR
@@ -55,8 +57,8 @@
 #define AW9523_INT_GPIO   GPIO_NUM_11    // VDD_SPI配置为GPIO11（中断引脚）
 
 // 方向寄存器建议配置：1=输入, 0=输出
-// P0: 按钮 SUCK(P0_0)/ON(P0_1)/ROCK(P0_2)/VOL(P0_3) 输入，其余输出
-#define AW9523_CONFIG_P0  0x0F  // P0_0,P0_1,P0_2,P0_3 输入
+// P0: 按钮 SUCK(P0_0)/ON(P0_1)/ROCK(P0_2)/VOL(P0_3) 输入，P0_5音频功放控制输出，其余输出
+#define AW9523_CONFIG_P0  0x0F  // P0_0,P0_1,P0_2,P0_3 输入，P0_4~P0_7 输出(含P0_5音频功放)
 // P1: 全部输出（电机/加热器控制）
 #define AW9523_CONFIG_P1  0x00
 

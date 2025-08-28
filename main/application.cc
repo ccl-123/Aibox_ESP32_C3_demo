@@ -14,6 +14,8 @@
 
 //添加千娇外设控制
 #include "boards/lichuang-c3-dev/device_manager.h"
+//添加串口RX功能
+#include "boards/lichuang-c3-dev/uart_rx.h"
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "afe_audio_processor.h"
@@ -1021,6 +1023,47 @@ void Application::Start() {
 
     // Print heap stats
     SystemInfo::PrintHeapStats();
+
+    // 延迟初始化UART RX功能，避免与电源管理冲突
+    Schedule([this]() {
+        ESP_LOGI(TAG, "Delayed UART RX initialization...");
+        
+        // 延迟2秒再初始化UART，确保系统完全稳定
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        
+        ESP_LOGI(TAG, "Initializing UART RX functionality...");
+        UART_RX_Init();
+
+        // 检查UART是否成功初始化
+        if (UART_RX_IsInitialized()) {
+            // Create UART RX task
+            ESP_LOGI(TAG, "Creating UART RX task...");
+            xTaskCreate([](void* arg) {
+                ESP_LOGI("UART_RX_Task", "UART RX Task started on core %d", xPortGetCoreID());
+                
+                while (true) {
+                    // 处理串口接收数据
+                    UART_RX_DATA();
+                    
+                    // 检查是否有按键按下
+                    if (uart_rx_key_press) {
+                        ESP_LOGI("UART_RX_Task", "Key pressed: %c (decimal: %d)", 
+                                uart_rx_button_value, uart_rx_button_value_int);
+                        
+                        // 在这里可以添加按键处理逻辑
+                        // 例如：控制设备状态、发送MQTT消息等
+                    }
+                    
+                    // 任务延时100ms
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+            }, "UART_RX_Task", 4096, NULL, 1, NULL);
+
+            ESP_LOGI(TAG, "UART RX system initialized successfully");
+        } else {
+            ESP_LOGW(TAG, "UART RX initialization failed - 433串口功能不可用，但系统继续正常运行");
+        }
+    });
 
     // Enter the main event loop
     MainEventLoop();
