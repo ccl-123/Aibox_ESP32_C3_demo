@@ -206,8 +206,10 @@ void Application::CheckNewVersion() {
           ESP_LOGE(TAG, "Firmware upgrade failed!");
 
           // 显示升级失败状态
-          display->SetStatus("升级失败");
-          display->SetEmotion("sad");
+          if (display != nullptr) {
+            display->SetStatus("升级失败");
+            display->SetEmotion("sad");
+          }
 
           // 尝试恢复音频系统
           try {
@@ -551,7 +553,9 @@ void Application::Start() {
     board.StartNetwork();
 
     // Update the status bar immediately to show the network state
-    display->UpdateStatusBar(true);
+    if (display != nullptr) {
+        display->UpdateStatusBar(true);
+    }
 
     // Check for new firmware version or get the MQTT broker address
     xTaskCreate(
@@ -563,7 +567,9 @@ void Application::Start() {
         "check_new_version", 6800, this, 1, nullptr);
 
     // Initialize the protocol
-    display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
+    if (display != nullptr) {
+        display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
+    }
 
     // Add MCP common tools before initializing the protocol
 #if CONFIG_IOT_PROTOCOL_MCP
@@ -1042,7 +1048,10 @@ void Application::OnClockTimer() {
                     time_t now = time(NULL);
                     char time_str[64];
                     strftime(time_str, sizeof(time_str), "%H:%M  ", localtime(&now));
-                    Board::GetInstance().GetDisplay()->SetStatus(time_str);
+                    auto display = Board::GetInstance().GetDisplay();
+                    if (display != nullptr) {
+                        display->SetStatus(time_str);
+                    }
                 });
             }
         }
