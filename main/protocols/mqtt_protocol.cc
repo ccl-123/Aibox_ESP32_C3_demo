@@ -66,7 +66,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     }
 
     // 根据设备ID和语言设置生成发布主题
-    publish_topic_ = "stt/doll/" + user_id3 + "/" + saved_language;
+    publish_topic_ = "stt/doll/" + user_id3 + "/" + "zh";
     ESP_LOGI(TAG, "Publish topic: %s", publish_topic_.c_str());
 
     // 生成服务端VAD检测订阅主题
