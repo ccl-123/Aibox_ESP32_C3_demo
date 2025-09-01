@@ -733,7 +733,7 @@ void Application::Start() {
                 xTaskCreate([](void* arg){
                     Application* app = static_cast<Application*>(arg);
                     // 等待后台解码任务完成
-                    app->GetBackgroundTask()->WaitForCompletion();
+                    //app->GetBackgroundTask()->WaitForCompletion();
                     // 等待播放队列清空
                     ESP_LOGI(TAG, "[AUDIO-STOP] Waiting for playback queue to drain (no timeout)...");
                     std::unique_lock<std::mutex> plock(app->playback_mutex_);
