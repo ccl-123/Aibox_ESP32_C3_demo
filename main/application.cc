@@ -729,25 +729,28 @@ void Application::Start() {
                 }
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 ESP_LOGW(TAG, "--------------------GET STOP----------------------");
-                Schedule([this]() {
-                    // 等待解码任务完成
-                    background_task_->WaitForCompletion();
-
-                    // 等待播放队列清空：让已解码的PCM播放完毕，避免音频突然截断
+                // 🚀 将TTS stop的等待解码/播放清空逻辑移入独立FreeRTOS任务，避免阻塞后台线程队列
+                xTaskCreate([](void* arg){
+                    Application* app = static_cast<Application*>(arg);
+                    // 等待后台解码任务完成
+                    app->GetBackgroundTask()->WaitForCompletion();
+                    // 等待播放队列清空
                     ESP_LOGI(TAG, "[AUDIO-STOP] Waiting for playback queue to drain (no timeout)...");
-                    std::unique_lock<std::mutex> plock(playback_mutex_);
-                    playback_cv_.wait(plock, [this]() { return audio_playback_queue_.empty(); });
+                    std::unique_lock<std::mutex> plock(app->playback_mutex_);
+                    app->playback_cv_.wait(plock, [app]() { return app->audio_playback_queue_.empty(); });
                     plock.unlock();
-                    ESP_LOGI(TAG, "[AUDIO-STOP] Playback queue drained, final size: %u", (unsigned)audio_playback_queue_.size());
-
-                    // Always honor stop even if speaking flag was not set due to ordering
-                    aborted_ = false; // clear abort flag to allow next round
-                    if (listening_mode_ == kListeningModeManualStop) {
-                        SetDeviceState(kDeviceStateIdle);
-                    } else {
-                        SetDeviceState(kDeviceStateListening);
-                    }
-                });
+                    ESP_LOGI(TAG, "[AUDIO-STOP] Playback queue drained, final size: %u", (unsigned)app->audio_playback_queue_.size());
+                    // 回到主线程进行状态切换
+                    app->Schedule([app]() {
+                        app->aborted_ = false; // 清除中止标志
+                        if (app->listening_mode_ == kListeningModeManualStop) {
+                            app->SetDeviceState(kDeviceStateIdle);
+                        } else {
+                            app->SetDeviceState(kDeviceStateListening);
+                        }
+                    });
+                    vTaskDelete(NULL);
+                }, "tts_stop_drain", 4096, this, 4, nullptr);
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
@@ -821,7 +824,7 @@ void Application::Start() {
         } 
         else if (strcmp(type->valuestring, "0") == 0 || strcmp(type->valuestring, "1") == 0 || strcmp(type->valuestring, "3") == 0 ||
                  strcmp(type->valuestring, "4") == 0 || strcmp(type->valuestring, "5") == 0 || strcmp(type->valuestring, "6") == 0) {
-                // 这是控制消息，直接处理
+                // 🚀 关键修复：控制消息使用后台任务立即执行，避免被TTS播放等待逻辑阻塞
                 cJSON* vlue = cJSON_GetObjectItem(root, "vlue");
                 if (!vlue || !cJSON_IsString(vlue)) {
                     ESP_LOGW(TAG, "Missing or invalid vlue field in control message");
@@ -831,87 +834,53 @@ void Application::Start() {
                 int type_val = atoi(type->valuestring);  // 将类型字符串转换为整数
                 std::string control_value = vlue->valuestring;
 
-                ESP_LOGI(TAG, "Processing control message: type=%d, value=%s", type_val,
+                ESP_LOGI(TAG, "🚀 Processing control message IMMEDIATELY: type=%d, value=%s", type_val,
                         control_value.c_str());
 
-                if (type_val == 0) {  // 音量控制
-                    ESP_LOGI(TAG, "【音量控制】接收到远程控制指令, value=%s", control_value.c_str());
-                    
-                    // 获取设备管理器实例
+                // 使用后台任务立即执行控制逻辑，绕过主事件循环的阻塞
+                background_task_->Schedule([this, type_val, control_value]() {
                     auto* device_manager = Board::GetInstance().GetDeviceManager();
                     if (!device_manager) {
                         ESP_LOGE(TAG, "设备管理器不可用");
                         return;
                     }
-                    
-                    device_manager->HandleRemoteVolumeControl(control_value);
 
-                } else if (type_val == 1) {  // 关机控制
-                    ESP_LOGI(TAG, "【关机控制】接收到远程关机指令");
-                    
-                    // 获取设备管理器实例
-                    auto* device_manager = Board::GetInstance().GetDeviceManager();
-                    if (device_manager) {
+                    if (type_val == 0) {  // 音量控制
+                        ESP_LOGI(TAG, "【音量控制】⚡立即执行远程控制指令, value=%s", control_value.c_str());
+                        device_manager->HandleRemoteVolumeControl(control_value);
+
+                    } else if (type_val == 1) {  // 关机控制
+                        ESP_LOGI(TAG, "【关机控制】⚡立即执行远程关机指令");
                         device_manager->Shutdown();
-                    } else {
-                        ESP_LOGE(TAG, "设备管理器不可用，执行系统重启");
-                        esp_restart();
-                    }
 
-                }else if (type_val == 3) {  // 休眠模式控制
-                    ESP_LOGI(TAG, "【休眠控制】接收到远程休眠指令");
-                    
-                    // 获取设备管理器实例
-                    auto* device_manager = Board::GetInstance().GetDeviceManager();
-                    if (device_manager) {
+                    } else if (type_val == 3) {  // 休眠模式控制
+                        ESP_LOGI(TAG, "【休眠控制】⚡立即执行远程休眠指令");
                         device_manager->EnterIdleMode();
-                    }
+                        
+                        // 休眠需要状态切换，使用Schedule确保在主线程执行
+                        Schedule([this]() {
+                            if (device_state_ == kDeviceStateSpeaking) {
+                                AbortSpeaking(kAbortReasonNone);
+                            }
+                            SetDeviceState(kDeviceStateIdle);
+                        });
 
-                    if (device_state_ == kDeviceStateSpeaking) {
-                        AbortSpeaking(kAbortReasonNone);
-                    }
+                    } else if (type_val == 4) {  // 夹吸控制状态
+                        ESP_LOGI(TAG, "【夹吸控制】⚡立即执行远程控制指令, value=%s", control_value.c_str());
+                        int value_int = std::atoi(control_value.c_str());
+                        device_manager->HandleRemoteSuckControl(value_int);
 
-                    SetDeviceState(kDeviceStateIdle);
+                    } else if(type_val == 5) { // 震动控制
+                        ESP_LOGI(TAG, "【震动控制】⚡立即执行远程控制指令, value=%s", control_value.c_str());
+                        int value_int = std::atoi(control_value.c_str());
+                        device_manager->HandleRemoteRockControl(value_int);
 
-                }else if (type_val == 4) {  // 夹吸控制状态
-                    ESP_LOGI(TAG, "【夹吸控制】接收到远程控制指令, value=%s", control_value.c_str());
-                    
-                    // 获取设备管理器实例
-                    auto* device_manager = Board::GetInstance().GetDeviceManager();
-                    if (!device_manager) {
-                        ESP_LOGE(TAG, "设备管理器不可用");
-                        return;
+                    } else if(type_val == 6) { // 加热控制
+                        ESP_LOGI(TAG, "【加热控制】⚡立即执行远程控制指令, value=%s", control_value.c_str());
+                        int value_int = std::atoi(control_value.c_str());
+                        device_manager->HandleRemoteHeaterControl(value_int);
                     }
-                    
-                    int value_int = std::atoi(control_value.c_str());
-                    device_manager->HandleRemoteSuckControl(value_int);
-
-                }else if(type_val == 5){ // 震动控制
-                    ESP_LOGI(TAG, "【震动控制】接收到远程控制指令, value=%s", control_value.c_str());
-                    
-                    // 获取设备管理器实例
-                    auto* device_manager = Board::GetInstance().GetDeviceManager();
-                    if (!device_manager) {
-                        ESP_LOGE(TAG, "设备管理器不可用");
-                        return;
-                    }
-                    
-                    int value_int = std::atoi(control_value.c_str());
-                    device_manager->HandleRemoteRockControl(value_int);
-
-                }else if(type_val == 6){ // 加热控制
-                    ESP_LOGI(TAG, "【加热控制】接收到远程控制指令, value=%s", control_value.c_str());
-                    
-                    // 获取设备管理器实例
-                    auto* device_manager = Board::GetInstance().GetDeviceManager();
-                    if (!device_manager) {
-                        ESP_LOGE(TAG, "设备管理器不可用");
-                        return;
-                    }
-                    
-                    int value_int = std::atoi(control_value.c_str());
-                    device_manager->HandleRemoteHeaterControl(value_int);
-                }
+                });
 
 
             } 
