@@ -163,6 +163,8 @@ private:
     void EnterAudioTestingMode();
     void ExitAudioTestingMode();
 
+    uint8_t current_volume_ = 60;
+
 
 };
 
