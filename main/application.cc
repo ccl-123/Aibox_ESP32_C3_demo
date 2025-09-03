@@ -18,6 +18,8 @@
 #include "boards/lichuang-c3-dev/uart_rx.h"
 //添加IMU数据结构体支持
 #include "esp32_s3_szp.h"
+#include <esp_system.h>
+#include <esp_sleep.h>
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "afe_audio_processor.h"
