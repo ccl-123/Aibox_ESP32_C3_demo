@@ -94,7 +94,6 @@ private:
     Application();
     ~Application();
 
-    uint8_t current_volume_ = 80;
     std::unique_ptr<WakeWord> wake_word_;
     std::unique_ptr<AudioProcessor> audio_processor_;
     std::unique_ptr<AudioDebugger> audio_debugger_;

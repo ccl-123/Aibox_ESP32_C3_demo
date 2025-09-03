@@ -11,11 +11,7 @@
 #include "device_manager.h"
 
 #include <esp_log.h>
-<<<<<<< HEAD
-#include <esp_lcd_panel_vendor.h>
-=======
 #include <esp_sleep.h>
->>>>>>> main
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <driver/gpio.h>
@@ -34,12 +30,8 @@ class LichuangC3DevBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t codec_i2c_bus_;
     Button boot_button_;
-<<<<<<< HEAD
-    LcdDisplay* display_;
-=======
     Button power_button_;  // GPIO18电源按键
     Display* display_ = nullptr; // 使用通用 Display 指针，实际为 NoDisplay
->>>>>>> main
     SingleLed* led_;
 
     // AW9523 IO 扩展
