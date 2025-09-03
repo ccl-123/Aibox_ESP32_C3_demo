@@ -165,6 +165,8 @@ private:
     void EnterAudioTestingMode();
     void ExitAudioTestingMode();
 
+    uint8_t current_volume_ = 60;
+
 
     static constexpr uint8_t kVolumeStep = 10;
     static constexpr uint8_t kVolumeMax = 100;
