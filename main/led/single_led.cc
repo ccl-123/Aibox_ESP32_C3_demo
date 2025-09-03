@@ -160,6 +160,10 @@ void SingleLed::OnStateChanged() {
             SetColor(0, DEFAULT_BRIGHTNESS, 0);
             StartContinuousBlink(500);
             break;
+        case kDeviceStateUnknown:
+            // 设备关机或未知状态，关闭LED
+            TurnOff();
+            break;
         default:
             ESP_LOGW(TAG, "Unknown led strip event: %d", device_state);
             return;

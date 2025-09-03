@@ -11,6 +11,8 @@
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "audio_debugger.h"
+#include <esp_system.h>
+#include <esp_sleep.h>
 #include "uart/serial_tx_service.h"
 
 #if CONFIG_USE_AUDIO_PROCESSOR
@@ -810,7 +812,50 @@ void Application::Start() {
             } else {
                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
             }
-        } else {
+        } 
+        else if (strcmp(type->valuestring, "0") == 0 || strcmp(type->valuestring, "1") == 0)
+        {
+
+             cJSON* vlue = cJSON_GetObjectItem(root, "vlue");
+                if (!vlue || !cJSON_IsString(vlue)) {
+                    ESP_LOGW(TAG, "Missing or invalid vlue field in control message");
+                    return;
+                }
+
+            int type_val = atoi(type->valuestring);  // 将类型字符串转换为整数
+            std::string control_value = vlue->valuestring;
+
+            if (type_val == 0) {  // 音量控制
+                auto codec = Board::GetInstance().GetAudioCodec();
+                if (!codec) {
+                ESP_LOGE(TAG, "Codec is null");
+                return;
+                }
+
+                int new_volume = current_volume_;
+                if (control_value == "+") {
+                new_volume = current_volume_ + 10;
+                } else if (control_value == "-") {
+                new_volume = current_volume_ - 10;
+                } else if (control_value == "++") {
+                new_volume = 100;
+                } else if (control_value == "--") {
+                new_volume = 60;
+                } 
+
+                ESP_LOGW(TAG, "Setting volume: %d -> %d", current_volume_, new_volume);
+                codec->SetOutputVolume(new_volume);
+
+            }else if (type_val == 1) {  // 关机控制
+                ESP_LOGI(TAG, "【关机控制】⚡立即执行远程关机指令");
+                esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+                esp_deep_sleep_start();
+            }
+
+        }
+        
+        
+        else {
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }
     });
