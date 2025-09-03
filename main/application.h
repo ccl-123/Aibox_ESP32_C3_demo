@@ -170,6 +170,8 @@ private:
     void EnterAudioTestingMode();
     void ExitAudioTestingMode();
 
+    uint8_t current_volume_ = 60;
+
 
 
     // 串口测试：定时发送
